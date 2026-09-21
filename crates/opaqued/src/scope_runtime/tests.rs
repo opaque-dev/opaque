@@ -21,6 +21,8 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod qualification;
+
 struct Provider {
     endpoint: String,
     certificate: Vec<u8>,
