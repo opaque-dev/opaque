@@ -23,6 +23,7 @@ pub mod proto;
 pub mod release;
 pub mod resolver;
 pub mod sanitize;
+pub mod scope;
 pub mod seal;
 pub mod secret;
 pub mod socket;
