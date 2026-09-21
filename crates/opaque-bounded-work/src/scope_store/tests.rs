@@ -1,4 +1,5 @@
 use super::*;
+mod qualification;
 use opaque_core::scope::{
     FieldConstraint, FieldValue, MinimumApproval, ScopeRequirements, VERSION,
 };
