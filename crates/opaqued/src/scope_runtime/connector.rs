@@ -121,9 +121,18 @@ impl Connector {
         {
             return Err("support credential invalid".into());
         }
-        let mut authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+        let authorization_text = zeroize::Zeroizing::new(format!("Bearer {token}"));
+        let mut authorization = reqwest::header::HeaderValue::from_str(&authorization_text)
             .map_err(|_| "support credential invalid")?;
         authorization.set_sensitive(true);
+        // A path identifies custody, not the provider account selected by its
+        // current credential. Keep this credential commitment internal; only
+        // the enclosing provider-profile digest leaves the connector.
+        let mut credential_hash = Sha256::new();
+        credential_hash.update(b"opaque.support.credential.v1\0");
+        credential_hash.update(token.as_bytes());
+        let credential_binding =
+            zeroize::Zeroizing::new(<[u8; 32]>::from(credential_hash.finalize()));
         let mut builder = reqwest::Client::builder()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
@@ -140,9 +149,15 @@ impl Connector {
         let client = builder
             .build()
             .map_err(|_| "support transport unavailable")?;
-        let digest = hash(
+        let profile_bytes = serde_json::to_vec(
             &serde_json::json!({"contract":"opaque.support.case.v1","endpoint":endpoint.as_str(),"credential_slot":profile.token_file}),
-        )?;
+        ).map_err(|_| "encoding failed")?;
+        let mut profile_hash = Sha256::new();
+        profile_hash.update(b"opaque.support.provider-profile.v2\0");
+        profile_hash.update((profile_bytes.len() as u64).to_be_bytes());
+        profile_hash.update(&profile_bytes);
+        profile_hash.update(credential_binding.as_ref());
+        let digest = format!("{:x}", profile_hash.finalize());
         Ok(Self {
             client,
             endpoint,

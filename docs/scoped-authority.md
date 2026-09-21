@@ -49,6 +49,13 @@ end in `/`, and have no credentials, query or fragment. Proxy use, redirects and
 transport retries are disabled. The token file must be owned by the broker, have
 no group/other permissions, and not be a symbolic link or multiply linked file.
 
+The broker loads the credential at startup and binds its value into the provider
+profile digest without exposing a separate credential fingerprint. After rotating
+the credential, restart the broker and obtain a fresh human-approved scope. Old
+scopes and action approvals cannot authorize work with the replacement credential,
+even when the endpoint, credential path and case IDs are unchanged. Editing the
+file alone does not change the credential already loaded by a running broker.
+
 ## Provider contract
 
 `GET {endpoint}cases/{id}` returns exactly an object with `id`, `status` and

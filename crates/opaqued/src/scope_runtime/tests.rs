@@ -898,3 +898,72 @@ async fn connector_identifiers_cannot_select_paths_headers_or_create_an_attempt(
     );
     assert!(provider.finish().await.is_empty());
 }
+
+#[test]
+fn provider_profile_changes_when_the_loaded_credential_changes_at_the_same_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = directory.path().join("token");
+    std::fs::write(&token, "fixture-account-one-token").unwrap();
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let profile = connector::Profile {
+        endpoint: "https://support.example.invalid/v1/".into(),
+        token_file: token.clone(),
+    };
+    let original = Connector::new(&profile).unwrap().digest;
+    assert_eq!(Connector::new(&profile).unwrap().digest, original);
+    // File formatting does not change the credential actually sent to the API.
+    std::fs::write(&token, "fixture-account-one-token\n").unwrap();
+    assert_eq!(Connector::new(&profile).unwrap().digest, original);
+    std::fs::write(&token, "fixture-account-two-token").unwrap();
+    let changed = Connector::new(&profile).unwrap().digest;
+    assert_ne!(changed, original);
+    assert_eq!(changed.len(), 64);
+    assert!(!changed.contains("fixture-account"));
+}
+
+#[tokio::test]
+async fn credential_rotation_at_restart_invalidates_old_scope_and_approved_action_before_write() {
+    let provider = Provider::new(vec![read_reply()]).await;
+    let f = Fixture::new(&provider, true);
+    let (scope, issuance) = f.issued(1);
+    let review = f.prepared(&scope, &issuance, "request1").await;
+    f.approve(&review);
+    let original_profile = f.runtime.connector.digest.clone();
+    std::fs::write(
+        &f.runtime.config.profile.token_file,
+        "fixture-other-provider-account-token",
+    )
+    .unwrap();
+    let f = f.restart();
+    assert_ne!(f.runtime.connector.digest, original_profile);
+    assert!(f.execute(&review, &issuance).await.is_err());
+    assert!(
+        f.runtime
+            .review_action(
+                Prepare {
+                    scope_id: scope.scope_id.clone(),
+                    issuance_round_id: issuance,
+                    resource: "case1".into(),
+                    status: Status::Closed,
+                    request_id: "request2".into()
+                },
+                &f.context
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.runtime
+            .ledger
+            .get_scope(&scope.scope_id)
+            .unwrap()
+            .charged_attempts,
+        0
+    );
+    let (fresh, _) = f.issued(1);
+    assert_eq!(fresh.provider_profile_digest, f.runtime.connector.digest);
+    assert_ne!(fresh.provider_profile_digest, scope.provider_profile_digest);
+    let requests = provider.finish().await;
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("GET /cases/case1 "));
+}
