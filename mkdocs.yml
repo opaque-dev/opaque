@@ -130,7 +130,7 @@ nav:
           - Web Dashboard: web-dashboard.md
           - Audit Analytics: audit-analytics.md
           - Building on the Core: reusable-core.md
-          - Scoped Authority Foundation: scoped-authority.md
+          - Scoped Support Workflow: scoped-authority.md
           - Coverage and Assertions: testing-coverage.md
           - Organization Architecture: enterprise-architecture.md
           - Recordings: demos.md

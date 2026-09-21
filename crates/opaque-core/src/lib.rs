@@ -24,6 +24,7 @@ pub mod release;
 pub mod resolver;
 pub mod sanitize;
 pub mod scope;
+pub mod scope_review;
 pub mod seal;
 pub mod secret;
 pub mod socket;

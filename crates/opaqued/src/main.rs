@@ -69,6 +69,10 @@ mod resource_authority_provisioning_tests;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod role_authority_tests;
 mod rpc_wrappers;
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod scope_rpc_tests;
+mod scope_runtime;
 mod trust_domain;
 mod workspace_process;
 #[cfg(test)]
@@ -101,6 +105,9 @@ use opaque_core::operation_handler::OperationHandler;
 /// Daemon configuration loaded from `~/.opaque/config.toml`.
 #[derive(Debug, Clone, Deserialize, Default)]
 struct DaemonConfig {
+    /// Opt-in fixed support-case workflow; requires sealed isolated identity custody.
+    #[serde(default)]
+    scope_workflow: Option<scope_runtime::Config>,
     /// Signed third-party MCP registry and broker-owned credential bindings.
     #[serde(default)]
     mcp: Option<opaque_bounded_work::mcp::Config>,
@@ -372,6 +379,7 @@ Docs: https://opaque.info/
 }
 
 struct DaemonState {
+    scope_workflow: Option<Arc<scope_runtime::Runtime>>,
     mcp: Option<Arc<opaque_bounded_work::mcp::Gateway>>,
     /// Immutable attestor binding installed by the Unix listener after privilege drop.
     workload_attestor: opaque_federation_runtime::workload_attest::ListenerAttestor,
@@ -2555,6 +2563,7 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
     // Second-device factor: pairing manager + approval server, when enabled.
     // Constructed before the gate so the registry can hold the verifier, and
     // stashed in DaemonState for the device_* control methods.
+    let mut scope_workflow: Option<Arc<scope_runtime::Runtime>> = None;
     let mut pairing_manager: Option<Arc<opaque_approval::pairing::PairingManager>> = None;
     let mut approval_server_addr: Option<std::net::SocketAddr> = None;
     let mut second_device_verifier: Option<(
@@ -2564,6 +2573,7 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
     if config.approval.second_device
         || !config.workstation_approvers.is_empty()
         || config.remote_approvals.is_some()
+        || config.scope_workflow.is_some()
     {
         let state_dir = audit_db_path
             .parent()
@@ -2673,6 +2683,37 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
             .transpose()
             .map_err(std::io::Error::other)?;
 
+        if let Some(workflow_config) = config.scope_workflow.clone() {
+            if backend != ApprovalBackendKind::Native
+                || !config.require_seal
+                || !td.enforce
+                || !config
+                    .identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.required)
+            {
+                return Err(std::io::Error::other(
+                    "scope workflow requires native approval, required identity, and sealed isolated custody",
+                ));
+            }
+            let boundary = tenant
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("scope workflow requires tenant isolation"))?;
+            let runtime = identity_runtime
+                .clone()
+                .ok_or_else(|| std::io::Error::other("scope workflow requires identity"))?;
+            scope_workflow = Some(Arc::new(
+                scope_runtime::Runtime::open(
+                    workflow_config,
+                    boundary.binding(),
+                    &state_dir,
+                    runtime,
+                    pm.clone(),
+                )
+                .map_err(std::io::Error::other)?,
+            ));
+        }
+
         // TLS identity persists so paired devices' fingerprint pin survives
         // restarts (custody set).
         let tls = opaque_approval::approval_server::load_or_create_tls_identity(&state_dir)
@@ -2691,6 +2732,11 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
         .map_err(std::io::Error::other)?;
         let server = if let Some(remote) = &remote {
             server.with_remote(remote.clone())
+        } else {
+            server
+        };
+        let server = if let Some(workflow) = &scope_workflow {
+            server.with_scope_reviews(workflow.clone())
         } else {
             server
         };
@@ -2995,6 +3041,7 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
         tenant.as_ref().map(|t| t.binding()).cloned(),
     )?;
     let state = Arc::new(DaemonState {
+        scope_workflow,
         mcp,
         workload_attestor,
         tenant,
@@ -4480,7 +4527,7 @@ fn validate_tenant_startup(
 }
 
 fn is_operation_method(method: &str) -> bool {
-    if method.starts_with("identity.provisioning.") {
+    if method.starts_with("identity.provisioning.") || method.starts_with("scope_") {
         return true;
     }
     matches!(
@@ -4574,6 +4621,10 @@ async fn handle_request(
             "this daemon requires agent operations to run under a delegation — \
              run `opaque login`, then wrap the agent with `opaque agent run`",
         );
+    }
+
+    if req.method.starts_with("scope_") {
+        return scope_runtime::handle(state, req, principal_ctx).await;
     }
 
     if req.method.starts_with("identity.provisioning.") {
@@ -6701,6 +6752,7 @@ exe_sha256 = "deadbeef"
             .build()
             .unwrap();
         DaemonState {
+            scope_workflow: None,
             mcp: None,
             workload_attestor:
                 opaque_federation_runtime::workload_attest::ListenerAttestor::unix_listener(),

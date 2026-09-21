@@ -85,6 +85,25 @@ enum Command {
         #[arg(long)]
         approval_id: String,
     },
+    /// Show one assigned pending scope review; use its round ID to review it.
+    ScopeList {
+        #[arg(long)]
+        state_dir: PathBuf,
+    },
+    /// Review full scope issuance or exact action and authenticate natively.
+    ScopeReview {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        round_id: String,
+    },
+    /// Read a historical signed scope decision receipt without resubmitting.
+    ScopeReceipt {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        round_id: String,
+    },
 }
 
 fn now() -> i64 {
@@ -122,6 +141,115 @@ async fn run(mut args: Args) -> Result<(), String> {
         };
     }
     match args.command {
+        Command::ScopeList { state_dir } => {
+            let (state, _) = custody::load(&state_dir)?;
+            let enrollment = state
+                .enrollment
+                .as_ref()
+                .ok_or("workstation is not enrolled")?;
+            let client = BrokerClient::new(&enrollment.endpoint, &enrollment.tls_fingerprint)?;
+            let identity =
+                opaque_approver::scope_review::identity(&client, enrollment, &state).await?;
+            let reviews = opaque_approver::scope_review::pending(
+                &client,
+                enrollment,
+                &state,
+                &identity,
+                now(),
+            )
+            .await?;
+            println!(
+                "{}",
+                serde_json::json!({"reviews":reviews,"window":"One assigned pending review at a time; review any known assigned round with scope-review --round-id."})
+            );
+        }
+        Command::ScopeReceipt {
+            state_dir,
+            round_id,
+        } => {
+            if uuid_like(&round_id).is_none() {
+                return Err("round_id must be a UUID".into());
+            }
+            let (state, _) = custody::load(&state_dir)?;
+            let enrollment = state
+                .enrollment
+                .as_ref()
+                .ok_or("workstation is not enrolled")?;
+            let client = BrokerClient::new(&enrollment.endpoint, &enrollment.tls_fingerprint)?;
+            let identity =
+                opaque_approver::scope_review::identity(&client, enrollment, &state).await?;
+            let receipt = opaque_approver::scope_review::receipt(
+                &client, enrollment, &state, &identity, &round_id,
+            )
+            .await?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).map_err(|_| "scope receipt encoding failed")?
+            );
+        }
+        Command::ScopeReview {
+            state_dir,
+            round_id,
+        } => {
+            use opaque_approver::scope_review;
+            use opaque_core::scope_review::{Decision, ReviewerDecision};
+            if uuid_like(&round_id).is_none() {
+                return Err("round_id must be a UUID".into());
+            }
+            let _lock = opaque_approver::instance::ReviewLock::acquire(&state_dir)?;
+            let (state, key) = custody::load(&state_dir)?;
+            let enrollment = state
+                .enrollment
+                .as_ref()
+                .ok_or("workstation is not enrolled")?;
+            let client = BrokerClient::new(&enrollment.endpoint, &enrollment.tls_fingerprint)?;
+            let identity = scope_review::identity(&client, enrollment, &state).await?;
+            let review =
+                scope_review::fetch(&client, enrollment, &state, &identity, &round_id, now())
+                    .await?;
+            let outcome = native::prompt_task_until(
+                &scope_review::display(&review),
+                review.document.expires_at,
+            )
+            .await
+            .map_err(|_| "native scope review/authentication failed; no signature sent")?;
+            let current_identity = scope_review::identity(&client, enrollment, &state).await?;
+            if identity != current_identity {
+                return Err(
+                    "scope reviewer enrollment changed after review; no signature sent".into(),
+                );
+            }
+            let current =
+                scope_review::fetch(&client, enrollment, &state, &identity, &round_id, now())
+                    .await?;
+            if current != review {
+                return Err("scope round changed after review; no signature sent".into());
+            }
+            let decision = if matches!(outcome, native::PromptOutcome::Approved { .. }) {
+                Decision::Approve
+            } else {
+                Decision::Reject
+            };
+            let response =
+                ReviewerDecision::sign(&review, &identity.broker_public_key, &key, decision, now())
+                    .map_err(
+                        |_| "scope round expired or changed before signing; no signature sent",
+                    )?;
+            let report = scope_review::submit(
+                &client,
+                enrollment,
+                &state,
+                &identity,
+                &review,
+                response,
+                now(),
+            )
+            .await?;
+            println!(
+                "{}",
+                serde_json::to_string(&report).map_err(|_| "scope decision encoding failed")?
+            );
+        }
         Command::CheckNative => check_native().await?,
         Command::Init { state_dir, name } => {
             let state = custody::initialize(&state_dir, &name)?;

@@ -479,6 +479,16 @@ impl ScopeStore {
         load_action(&*self.connection()?, action_id)
     }
 
+    pub fn get_request(
+        &self,
+        scope_id: &str,
+        subject: &str,
+        request_id: &str,
+    ) -> Result<ActionRecord, ScopeStoreError> {
+        let json:String=self.connection()?.query_row("SELECT record FROM scope_actions WHERE scope_id=?1 AND subject=?2 AND request_id=?3",params![scope_id,subject,request_id],|row|row.get(0)).optional()?.ok_or(ScopeStoreError::NotFound)?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
     /// Local append-only projection, not a signed portable evidence export.
     pub fn events(&self, after: u64, limit: usize) -> Result<Vec<AuthorityEvent>, ScopeStoreError> {
         if limit == 0 || limit > 1000 || after > i64::MAX as u64 {
@@ -492,6 +502,44 @@ impl ScopeStore {
             r.get::<_, String>(0)
         })?;
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    /// Bounded historical projection. The host must authenticate an auditor.
+    /// These records are evidence, never current authorization.
+    pub fn snapshot(&self, limit: usize) -> Result<serde_json::Value, ScopeStoreError> {
+        if limit == 0 || limit > 100 {
+            return Err(ScopeStoreError::Corrupt);
+        }
+        let connection = self.connection()?;
+        let mut projection = serde_json::Map::new();
+        for (name, table, order) in [
+            (
+                "scopes",
+                "scope_grants",
+                "json_extract(record, '$.issued_at') DESC, id DESC",
+            ),
+            (
+                "actions",
+                "scope_actions",
+                "json_extract(record, '$.reserved_at') DESC, id DESC",
+            ),
+            ("events", "scope_events", "sequence DESC"),
+        ] {
+            let total: u64 =
+                connection.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT record FROM {table} ORDER BY {order} LIMIT ?1"
+            ))?;
+            let rows = statement.query_map([limit as i64], |row| row.get::<_, String>(0))?;
+            let records: Vec<serde_json::Value> = rows
+                .map(|row| Ok(serde_json::from_str(&row?)?))
+                .collect::<Result<_, ScopeStoreError>>()?;
+            projection.insert(name.into(), serde_json::json!(records));
+            projection.insert(format!("{name}_total"), serde_json::json!(total));
+        }
+        Ok(serde_json::Value::Object(projection))
     }
 
     fn connection(&self) -> Result<MutexGuard<'_, Connection>, ScopeStoreError> {

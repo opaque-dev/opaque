@@ -17,6 +17,9 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "support/scope_flows.rs"]
+mod scope_flows;
+
 struct Peer {
     endpoint: String,
     pin: String,
@@ -148,17 +151,14 @@ fn ok(body: &Value) -> Vec<u8> {
     response("200 OK", &serde_json::to_vec(body).unwrap())
 }
 
-#[cfg(target_os = "linux")]
 struct CliImage {
     _directory: tempfile::TempDir,
     binary: PathBuf,
 }
 
-#[cfg(target_os = "linux")]
 static CLI_IMAGE: std::sync::Mutex<std::sync::Weak<CliImage>> =
     std::sync::Mutex::new(std::sync::Weak::new());
 
-#[cfg(target_os = "linux")]
 fn cli_image(temp_parent: &Path) -> Arc<CliImage> {
     let mut published = CLI_IMAGE.lock().unwrap();
     if let Some(image) = published.upgrade() {
@@ -201,7 +201,6 @@ struct Workstation {
     state: PathBuf,
     binary: PathBuf,
     helper: PathBuf,
-    #[cfg(target_os = "linux")]
     _image: Arc<CliImage>,
 }
 impl Workstation {
@@ -210,12 +209,8 @@ impl Workstation {
         let state = directory.path().join("state");
         custody::initialize(&state, "Disposable command reviewer").unwrap();
         let binary = directory.path().join("opaque-approver");
-        #[cfg(target_os = "linux")]
         let image = cli_image(directory.path().parent().unwrap());
-        #[cfg(target_os = "linux")]
         std::fs::hard_link(&image.binary, &binary).unwrap();
-        #[cfg(not(target_os = "linux"))]
-        std::fs::copy(env!("CARGO_BIN_EXE_opaque-approver"), &binary).unwrap();
         let helper = directory.path().join("opaque-approve-helper");
         std::os::unix::fs::symlink(
             concat!(
@@ -230,7 +225,6 @@ impl Workstation {
             state,
             binary,
             helper,
-            #[cfg(target_os = "linux")]
             _image: image,
         }
     }

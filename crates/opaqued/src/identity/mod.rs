@@ -234,6 +234,18 @@ impl IdentityRuntime {
         reviewer: Option<(&opaque_core::identity::PrincipalId, Role, u64)>,
         authorize: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
+        self.with_scope_authority(requester, None, reviewer, authorize)
+    }
+
+    /// Scope issuance/use also checks the current subject while holding the
+    /// same identity writer fence as delegation and reviewer revocation.
+    pub fn with_scope_authority(
+        &self,
+        requester: Option<&PrincipalContext>,
+        subject: Option<&opaque_core::identity::PrincipalId>,
+        reviewer: Option<(&opaque_core::identity::PrincipalId, Role, u64)>,
+        authorize: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
         let conn = self.store.lock();
         let read_principal = |id: &opaque_core::identity::PrincipalId| {
             conn.query_row(
@@ -242,6 +254,12 @@ impl IdentityRuntime {
             ).map_err(|_|"principal unavailable".to_string())
         };
         let now = opaque_core::identity::now_unix();
+        if let Some(id) = subject {
+            let principal = read_principal(id)?;
+            if !self.principal_permitted(&principal) || !principal.has_role(Role::Operator) {
+                return Err("scope subject is no longer an eligible operator".into());
+            }
+        }
         if let Some(context) = requester {
             if self.store.delegation_revocation_failed(&context.jti) {
                 return Err("requester delegation revocation could not be persisted".into());
