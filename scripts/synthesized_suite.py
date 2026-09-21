@@ -41,6 +41,8 @@ PACKAGED_CHECKS = (
 PACKAGED_FAILURES = {
     b"packaged acceptance: installed binary identity differs from its selected revision\n": "installed_revision_mismatch",
     b"packaged acceptance: acceptance prerequisite or subprocess failed\n": "prerequisite_or_subprocess_failed",
+    b"packaged acceptance: installer command timed out\n": "installer_timeout",
+    b"packaged acceptance: installed command timed out\n": "installed_command_timeout",
     b"Packaged acceptance interrupted; no qualification produced.\n": "interrupted",
 }
 

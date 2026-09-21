@@ -31,6 +31,9 @@ SPEC = importlib.util.spec_from_file_location("release_artifacts", ROOT / "scrip
 RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
 NATIVE_MAGIC = {b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
+COMMAND_TIMEOUT_SECONDS = 15
+CLEANUP_TIMEOUT_SECONDS = 2
+TIMEOUT_DIAGNOSTICS = {"installer": "installer command timed out", "installed": "installed command timed out"}
 
 
 class AcceptanceError(Exception):
@@ -54,18 +57,37 @@ def host_target():
     return f"{arch}-{os_target}"
 
 
-def execute(command, *, environment, cwd, account=None, coverage=None):
+def stop_owned_group(process):
+    # The real installer can spawn tar/curl children that inherit its pipes.
+    # Killing only the shell can leave communicate waiting and children running.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        process.wait(timeout=CLEANUP_TIMEOUT_SECONDS)
+
+
+def execute(command, *, environment, cwd, account=None, coverage=None, stage="installed"):
+    require(stage in TIMEOUT_DIAGNOSTICS, "unrecognized installed command stage")
     options = {}
     if account and os.geteuid() == 0:
         options = {"user": account.pw_uid, "group": account.pw_gid, "extra_groups": []}
     process = subprocess.Popen([str(value) for value in command], env=environment, cwd=cwd,
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, **options)
+                               text=True, start_new_session=True, **options)
     try:
-        stdout, stderr = process.communicate(timeout=15)
+        stdout, stderr = process.communicate(timeout=COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        stop_owned_group(process)
+        raise AcceptanceError(TIMEOUT_DIAGNOSTICS[stage]) from None
     except BaseException:
-        process.kill()
-        process.communicate()
+        stop_owned_group(process)
         raise
     if coverage is not None and Path(command[0]).name in RELEASE.BINS:
         COVERAGE.profiles(coverage, roles={"installed"}, process_ids={process.pid})
@@ -197,7 +219,7 @@ def acceptance(args):
                                "OPAQUE_VERSION": args.version, "OPAQUE_INSTALL": str(prefix),
                                "OPAQUE_PACKAGED_ARCHIVE": str(archive_copy), "OPAQUE_PACKAGED_URL": archive_url,
                                "OPAQUE_PACKAGED_CHECKSUM": str(checksum), "OPAQUE_PACKAGED_REQUESTS": str(request_log)}
-        installed = execute(["/bin/sh", ROOT / "install.sh"], environment=install_environment, cwd=root, account=owner)
+        installed = execute(["/bin/sh", ROOT / "install.sh"], environment=install_environment, cwd=root, account=owner, stage="installer")
         require(installed.returncode == 0 and "Checksum verified." in installed.stdout,
                 "real installer did not verify and install the selected archive")
         for name in RELEASE.BINS:

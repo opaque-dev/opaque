@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("packaged_acceptance", Path(__file__).with_name("run.py"))
 RUNNER = importlib.util.module_from_spec(SPEC)
@@ -46,6 +48,30 @@ class PackagedAcceptanceTests(unittest.TestCase):
         environment = RUNNER.clean_environment(Path("/isolated-home"), Path("/isolated-tmp"), Path("/installed"))
         self.assertEqual(set(environment), {"HOME", "TMPDIR", "PATH", "LC_ALL", "LANG"})
         self.assertEqual(environment["PATH"], "/installed:/usr/bin:/bin")
+
+    def test_timeout_kills_pipe_holding_descendant_and_reports_only_fixed_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ready, effect = root / "ready", root / "late-effect"
+            child = ("import pathlib,time,sys; pathlib.Path(sys.argv[1]).write_text('ready'); "
+                     "time.sleep(0.8); pathlib.Path(sys.argv[2]).write_text('unexpected')")
+            parent = ("import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2],sys.argv[3]]); "
+                      "print('synthetic-sensitive-output',flush=True); time.sleep(10)")
+            start = time.monotonic()
+            with mock.patch.object(RUNNER, "COMMAND_TIMEOUT_SECONDS", 0.3), self.assertRaises(RUNNER.AcceptanceError) as caught:
+                RUNNER.execute([sys.executable, "-c", parent, child, ready, effect], environment={}, cwd=root, stage="installer")
+            self.assertEqual(str(caught.exception), "installer command timed out")
+            self.assertTrue(ready.exists(), "the descendant must have started before testing its cancellation")
+            self.assertLess(time.monotonic() - start, 2)
+            time.sleep(0.85)
+            self.assertFalse(effect.exists(), "the cancelled process group must not perform a late side effect")
+
+    def test_execute_preserves_success_and_rejects_unrecognized_diagnostic_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result = RUNNER.execute([sys.executable, "-c", "print('ok')"], environment={}, cwd=temporary)
+            self.assertEqual((result.returncode, result.stdout), (0, "ok\n"))
+            with self.assertRaisesRegex(RUNNER.AcceptanceError, "unrecognized installed command stage"):
+                RUNNER.execute(["not-invoked"], environment={}, cwd=temporary, stage="untrusted-output")
 
     def test_local_transport_copies_exact_bytes_and_rejects_other_urls_and_auth_headers(self):
         with tempfile.TemporaryDirectory() as temporary:
