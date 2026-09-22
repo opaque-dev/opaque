@@ -1,0 +1,18 @@
+apiVersion: policy.opaque.dev/v1alpha1
+kind: AuthorityPolicy
+metadata:
+  name: support-status
+  namespace: support
+spec:
+  tenantRef: example
+  connectorRef: support-api
+  authority:
+    operation: support.case.setStatus
+    allowedStatuses: [closed, resolved]
+    maxResources: 10
+    maxAttempts: 50
+    maxDuration: 1h
+  approval:
+    scope: Required
+    action: EveryAction
+    reviewerRef: support-approver

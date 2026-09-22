@@ -21,6 +21,7 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod authority_policy;
 mod qualification;
 
 struct Provider {
@@ -242,6 +243,7 @@ impl Fixture {
         std::fs::write(&token, "fixture-provider-token").unwrap();
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
         let config = Config {
+            authority_policy: None,
             profile: connector::Profile {
                 endpoint: provider.endpoint.clone(),
                 token_file: token,

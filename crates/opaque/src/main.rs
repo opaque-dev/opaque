@@ -21,6 +21,7 @@ use tokio::net::UnixStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 mod agent_process;
+mod authority_policy_command;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod ipc_tests;
@@ -124,6 +125,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Validate and compile versioned authority policy offline (no grants or activation).
+    AuthorityPolicy {
+        #[command(subcommand)]
+        action: authority_policy_command::Action,
+    },
     /// Check daemon liveness.
     Ping,
     /// Read daemon version.
@@ -2400,6 +2406,19 @@ async fn main() {
 
     // Handle commands that don't need a daemon connection.
     match &cmd {
+        Cmd::AuthorityPolicy { action } => {
+            match authority_policy_command::run(action) {
+                Ok(value) => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).expect("JSON Value encodes")
+                ),
+                Err(error) => {
+                    ui::error(&error);
+                    std::process::exit(EXIT_USAGE);
+                }
+            }
+            return;
+        }
         Cmd::Policy { action } => match action {
             PolicyAction::Regress {
                 baseline,
@@ -3186,6 +3205,7 @@ async fn main() {
         },
         // Already handled above; unreachable.
         Cmd::Policy { .. }
+        | Cmd::AuthorityPolicy { .. }
         | Cmd::Bundle { .. }
         | Cmd::Init { .. }
         | Cmd::Audit { .. }

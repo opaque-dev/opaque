@@ -1,5 +1,8 @@
 # Run a bounded support-case workflow
 
+Operator-selected limits can also use a pinned [AuthorityPolicy YAML/JSON manifest](authority-policy.md).
+Existing `[scope_workflow]` TOML remains supported.
+
 The opt-in scope workflow lets a person approve a finite set of support cases,
 allowed statuses, expiry and attempt budget. The broker prepares each status
 change against the provider's current resource version, checks current authority,

@@ -3,6 +3,7 @@
 pub mod approval_gate;
 pub mod attest;
 pub mod audit;
+pub mod authority_policy;
 pub mod bundle;
 pub mod capability;
 pub mod enclave_facade;
