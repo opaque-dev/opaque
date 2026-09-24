@@ -11,8 +11,17 @@ calls and requires no private enterprise source or production credentials.
 
 ## Run the example
 
-Use macOS or Linux with Git and the repository's Rust toolchain. From a checkout
-of the scoped-authority development branch containing `scope-recovery`:
+Use macOS or Linux with Git and the repository's Rust toolchain. The example is
+part of unreleased [PR #132](https://github.com/opaque-dev/opaque/pull/132).
+For an exact reproducible source checkout:
+
+```sh
+git clone https://github.com/opaque-dev/opaque.git opaque-scope-recovery
+cd opaque-scope-recovery
+git checkout --detach 0ff3de0290ca348a170980d8c1dfad13d84d7862
+```
+
+Then run:
 
 ```sh
 export OPAQUE_EXAMPLE_OUT="$(mktemp -d)/scope-recovery"

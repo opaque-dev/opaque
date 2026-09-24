@@ -133,6 +133,7 @@ nav:
           - Building on the Core: reusable-core.md
           - Scoped Support Workflow: scoped-authority.md
           - Reproduce Scope Recovery: scope-recovery.md
+          - Why Uncertain Writes Stay Charged: uncertain-agent-writes.md
           - Authority Policy Manifests: authority-policy.md
           - Coverage and Assertions: testing-coverage.md
           - Organization Architecture: enterprise-architecture.md

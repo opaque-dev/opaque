@@ -36,7 +36,7 @@ PUBLIC_ROUTES = frozenset({
     "hosted-demo", "identity", "linux-polkit", "llm-harness", "mcp-integration",
     "mobile-approvals", "operations", "policy", "roadmap-deferred",
     "remote-approvals", "reusable-core", "scoped-authority", "authority-policy",
-    "scope-evidence", "scope-recovery",
+    "scope-evidence", "scope-recovery", "uncertain-agent-writes",
     "security-assessment", "storage", "testing-coverage", "tutorial", "vault",
     "web-dashboard", "site",  # Existing tracked docs/site/index.html landing page.
 })
