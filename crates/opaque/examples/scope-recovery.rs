@@ -18,7 +18,7 @@ use opaque_core::{
 use serde_json::json;
 use std::{
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::Path,
     process::{Command, Stdio},
@@ -147,7 +147,8 @@ fn worker(root: &Path) -> Result<()> {
     store.issue_scope(grant.clone(), authority.as_ref(), now)?;
     let barrier = Arc::new(Barrier::new(WORKERS));
     let mut threads = Vec::new();
-    for i in 0..WORKERS {
+    let request_ids = request_ids(Some(&root.join("request-ids.json")))?;
+    for (i, request_id) in request_ids.into_iter().enumerate() {
         let (store, authority, barrier, grant) = (
             store.clone(),
             authority.clone(),
@@ -158,7 +159,7 @@ fn worker(root: &Path) -> Result<()> {
             let action = PreparedAction {
                 schema_version: 1,
                 action_id: format!("action-{i:02}"),
-                request_id: format!("worker-{i:02}/action-1"),
+                request_id,
                 scope_id: grant.scope_id.clone(),
                 scope_digest: grant.digest().unwrap(),
                 owner: owner(),
@@ -251,11 +252,52 @@ fn worker(root: &Path) -> Result<()> {
     }
 }
 
-fn run(root: &Path) -> Result<()> {
+fn request_ids(path: Option<&Path>) -> Result<Vec<String>> {
+    let ids = if let Some(path) = path {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err("request IDs must be a regular JSON file".into());
+        }
+        let mut bytes = Vec::new();
+        file.take(16385).read_to_end(&mut bytes)?;
+        if bytes.len() > 16384 {
+            return Err("request IDs exceed 16 KiB".into());
+        }
+        serde_json::from_slice(&bytes)?
+    } else {
+        (0..WORKERS)
+            .map(|i| format!("worker-{i:02}/action-1"))
+            .collect::<Vec<String>>()
+    };
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    if ids.len() != WORKERS
+        || unique.len() != WORKERS
+        || ids.iter().any(|id| {
+            id.is_empty()
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_:/".contains(&b))
+        })
+    {
+        return Err("expected sixteen distinct bounded request identifiers".into());
+    }
+    Ok(ids)
+}
+
+fn run(root: &Path, correlation: Option<&Path>) -> Result<()> {
     if !root.is_absolute() {
         return Err("output path must be absolute and new".into());
     }
+    let request_ids = request_ids(correlation)?;
     fs::DirBuilder::new().mode(0o700).create(root)?;
+    write_new(
+        &root.join("request-ids.json"),
+        &serde_json::to_vec(&request_ids)?,
+    )?;
     println!("SYNTHETIC PUBLIC-CORE REPRODUCTION: no native human ceremony or live provider");
     let mut child = Command::new(std::env::current_exe()?)
         .arg("--worker")
@@ -365,8 +407,13 @@ fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let result = match args.as_slice() {
         [mode, path] if mode == "--worker" => worker(Path::new(path)),
-        [path] => run(Path::new(path)),
-        _ => Err("usage: scope-recovery /absolute/new-output-directory".into()),
+        [path] => run(Path::new(path), None),
+        [path, option, ids] if option == "--request-ids" => {
+            run(Path::new(path), Some(Path::new(ids)))
+        }
+        _ => {
+            Err("usage: scope-recovery /absolute/new-output-directory [--request-ids FILE]".into())
+        }
     };
     if let Err(error) = result {
         eprintln!("scope-recovery: {error}");

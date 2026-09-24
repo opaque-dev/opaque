@@ -65,8 +65,25 @@ def main() -> None:
         json.dump(receipts, destination)
     command[command.index("--receipts") + 1] = str(tampered)
     run(command, expect_success=False)
+    # Invalid external correlation must fail before creating an output directory
+    # or starting the producer. Exercise the actual example, including a FIFO.
+    invalid = output / "invalid-request-ids.json"
+    refused_output = output / "refused-run"
+    for value in (["duplicate"] * 16, ["only-one"], ["x" * 129] * 16):
+        invalid.write_text(json.dumps(value))
+        run([example, str(refused_output), "--request-ids", str(invalid)], expect_success=False)
+        if refused_output.exists():
+            raise RuntimeError("invalid request IDs created producer state")
+    invalid.write_bytes(b" " * 16385)
+    run([example, str(refused_output), "--request-ids", str(invalid)], expect_success=False)
+    fifo = output / "invalid-request-ids.fifo"
+    os.mkfifo(fifo, 0o600)
+    run([example, str(refused_output), "--request-ids", str(fifo)], expect_success=False)
+    if refused_output.exists():
+        raise RuntimeError("invalid request IDs created producer state")
     print(json.dumps({"synthetic": True, "separate_cli_verification": "passed",
-                      "forged_review_rejected": True, "checkpoint_sha256": result["checkpoint_sha256"]}))
+                      "forged_review_rejected": True, "invalid_correlation_refused_before_execution": True,
+                      "checkpoint_sha256": result["checkpoint_sha256"]}))
 
 
 if __name__ == "__main__":
