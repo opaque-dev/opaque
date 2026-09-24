@@ -169,6 +169,42 @@ fn stopped_export_refuses_foreign_custody_missing_database_and_sql_aliases() {
 }
 
 #[test]
+fn stopped_export_refuses_missing_lock_unsafe_sidecars_and_unknown_schema_without_repair() {
+    let dir = custody_dir();
+    let path = dir.path().join("scope.db");
+    drop(ScopeStore::open(&path, owner()).unwrap());
+    let lock = dir.path().join("scope.db.writer.lock");
+    std::fs::remove_file(&lock).unwrap();
+    assert!(ScopeStore::export_stopped(&path, &owner()).is_err());
+    assert!(!lock.exists(), "export must never recreate missing custody");
+    std::fs::write(&lock, []).unwrap();
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600)).unwrap();
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let sidecar = dir.path().join(format!("scope.db{suffix}"));
+        std::os::unix::fs::symlink(&path, &sidecar).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(ScopeStore::export_stopped(&path, &owner()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(sidecar.is_symlink());
+        std::fs::remove_file(&sidecar).unwrap();
+    }
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(ScopeStore::export_stopped(&path, &owner()).is_err());
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("PRAGMA user_version = 999")
+        .unwrap();
+    drop(connection);
+    let before = std::fs::read(&path).unwrap();
+    assert!(matches!(
+        ScopeStore::export_stopped(&path, &owner()),
+        Err(ScopeStoreError::Corrupt)
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
 fn retained_review_signatures_bind_the_actual_scope_and_exact_charged_action() {
     use opaque_core::scope::{MinimumApproval, ReviewBinding};
     use opaque_core::scope_review::*;
