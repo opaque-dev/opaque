@@ -10,10 +10,11 @@
 //! Custody protects this structurally validated SQLite ledger. It is not a
 //! cryptographic anti-rollback store: recovery from an older valid snapshot needs
 //! independently retained high-water state and old-writer fencing by the host.
-//! No lease, rate-limit, automatic owner failover, or portable audit export is
-//! implemented. Restart preserves charges and turns unfinished attempts UNKNOWN.
+//! No lease, rate-limit or automatic owner failover is implemented. Portable
+//! exports describe retained state only. Restart preserves charges and turns
+//! unfinished attempts UNKNOWN.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -23,8 +24,7 @@ use std::sync::{Mutex, MutexGuard};
 use opaque_core::scope::{
     AdmissionEvidence, AuthorityOwner, MAX_DEPTH, PreparedAction, ScopeError, ScopeGrant,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use serde::{Deserialize, Serialize};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use thiserror::Error;
 
 /// Implement only in trusted application code backed by verified authority.
@@ -86,67 +86,17 @@ pub enum ScopeStoreError {
     Authority(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScopeRecord {
-    pub grant: ScopeGrant,
-    pub digest: String,
-    pub issued_at: i64,
-    pub revoked_at: Option<i64>,
-    pub charged_attempts: u64,
-    pub charged_resources: BTreeSet<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionState {
-    Reserved,
-    DispatchClaimed,
-    ApiAccepted,
-    Rejected,
-    Unknown,
-}
+// Public, storage-independent evidence contracts. Preserve existing imports.
+use opaque_core::scope_evidence::ScopeEvidence;
+pub use opaque_core::scope_evidence::{
+    ActionRecord, AuthorityEvent, EventKind, ExecutionState, ScopeRecord,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     ApiAccepted,
     Rejected,
     Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ActionRecord {
-    pub action: PreparedAction,
-    pub digest: String,
-    pub evidence: AdmissionEvidence,
-    pub reserved_at: i64,
-    pub dispatch_claimed_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub state: ExecutionState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventKind {
-    ScopeIssued,
-    ScopeRevoked,
-    AttemptCharged,
-    DispatchClaimed,
-    AttemptFinished,
-    Interrupted,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AuthorityEvent {
-    pub sequence: u64,
-    pub scope_id: String,
-    pub action_id: Option<String>,
-    pub kind: EventKind,
-    /// Recovery cannot know the interruption time; it records None.
-    pub observed_at: Option<i64>,
-    pub content_digest: String,
 }
 
 const META: &str = "CREATE TABLE scope_meta (id INTEGER PRIMARY KEY CHECK(id = 1), owner TEXT NOT NULL, last_seen INTEGER NOT NULL CHECK(last_seen >= 0))";
@@ -479,6 +429,97 @@ impl ScopeStore {
         load_action(&*self.connection()?, action_id)
     }
 
+    /// Complete retained evidence, atomically read under the ledger gate. This
+    /// does not recover, retry, refund or grant anything. The trusted host owns
+    /// auditor authentication and custody of the returned potentially sensitive
+    /// resource/action metadata.
+    pub fn export_evidence(&self) -> Result<ScopeEvidence, ScopeStoreError> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction()?;
+        let (owner, last_seen) = metadata(&tx)?;
+        if owner != self.owner {
+            return Err(ScopeStoreError::OwnerMismatch);
+        }
+        check_export_size(&tx)?;
+        let evidence = read_evidence(&tx, &owner, last_seen)?;
+        evidence.encode().map_err(|_| ScopeStoreError::Corrupt)?;
+        tx.commit()?;
+        Ok(evidence)
+    }
+
+    /// Read a stopped ledger without performing startup recovery or creating a
+    /// database. Requires the existing producer custody and exclusive writer
+    /// lock. Pending records stay pending in the export; only broker startup
+    /// records their interruption. Never copy a live database to use this API.
+    pub fn export_stopped(
+        path: &Path,
+        owner: &AuthorityOwner,
+    ) -> Result<ScopeEvidence, ScopeStoreError> {
+        owner.validate()?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let meta = parent.metadata()?;
+        if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+            return Err(ScopeStoreError::Corrupt);
+        }
+        // Existing regular custody files only; no repair or provisioning.
+        fn existing(path: &Path) -> Result<File, ScopeStoreError> {
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path)?;
+            let meta = file.metadata()?;
+            if !meta.is_file()
+                || meta.nlink() != 1
+                || meta.uid() != unsafe { libc::geteuid() }
+                || meta.mode() & 0o077 != 0
+            {
+                return Err(ScopeStoreError::Corrupt);
+            }
+            Ok(file)
+        }
+        let _source = existing(path)?;
+        let canonical = path.canonicalize()?;
+        let mut lock_path = canonical.as_os_str().to_os_string();
+        lock_path.push(".writer.lock");
+        let lock = existing(Path::new(&lock_path))?;
+        // SAFETY: this descriptor remains owned until the export is complete.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            return if error.kind() == std::io::ErrorKind::WouldBlock {
+                Err(ScopeStoreError::Locked)
+            } else {
+                Err(error.into())
+            };
+        }
+        let _writer = WriterLock(lock);
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let sibling = format!("{}{suffix}", canonical.display());
+            if Path::new(&sibling).symlink_metadata().is_ok() {
+                drop(existing(Path::new(&sibling))?);
+            }
+        }
+        let mut connection =
+            Connection::open_with_flags(&canonical, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.execute_batch("PRAGMA trusted_schema = OFF; PRAGMA query_only = ON;")?;
+        let tx = connection.transaction()?;
+        if tx.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))? != 1 {
+            return Err(ScopeStoreError::Corrupt);
+        }
+        verify_schema(&tx)?;
+        let (stored_owner, last_seen) = metadata(&tx)?;
+        if stored_owner != *owner {
+            return Err(ScopeStoreError::OwnerMismatch);
+        }
+        check_export_size(&tx)?;
+        let evidence = read_evidence(&tx, owner, last_seen)?;
+        evidence.encode().map_err(|_| ScopeStoreError::Corrupt)?;
+        tx.commit()?;
+        Ok(evidence)
+    }
+
     pub fn get_request(
         &self,
         scope_id: &str,
@@ -773,260 +814,57 @@ fn append_event(
     Ok(())
 }
 
+fn check_export_size(connection: &Connection) -> Result<(), ScopeStoreError> {
+    // Bound serialized rows before materializing them. Never silently truncate.
+    let bytes: u64 = connection.query_row("SELECT (SELECT coalesce(sum(length(CAST(record AS BLOB))),0) FROM scope_grants) + (SELECT coalesce(sum(length(CAST(record AS BLOB))),0) FROM scope_actions) + (SELECT coalesce(sum(length(CAST(record AS BLOB))),0) FROM scope_events)", [], |row| row.get(0))?;
+    if bytes > opaque_core::evidence_checkpoint::MAX_EXPORT_BYTES as u64 {
+        return Err(ScopeStoreError::Corrupt);
+    }
+    Ok(())
+}
+
+fn read_evidence(
+    connection: &Connection,
+    owner: &AuthorityOwner,
+    last_seen: i64,
+) -> Result<ScopeEvidence, ScopeStoreError> {
+    let mut statement = connection.prepare("SELECT id FROM scope_grants ORDER BY id")?;
+    let ids = statement
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let scopes = ids
+        .iter()
+        .map(|id| load_scope(connection, id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut statement =
+        connection.prepare("SELECT sequence, record FROM scope_events ORDER BY sequence")?;
+    let mut events = Vec::new();
+    for row in statement.query_map([], |r| Ok((r.get::<_, u64>(0)?, r.get::<_, String>(1)?)))? {
+        let (sequence, json) = row?;
+        let event: AuthorityEvent = serde_json::from_str(&json)?;
+        if event.sequence != sequence {
+            return Err(ScopeStoreError::Corrupt);
+        }
+        events.push(event);
+    }
+    Ok(ScopeEvidence {
+        schema_version: 1,
+        owner: owner.clone(),
+        last_seen,
+        scopes,
+        actions: all_actions(connection)?,
+        events,
+    })
+}
+
 fn verify_all(
     connection: &Connection,
     owner: &AuthorityOwner,
     last_seen: i64,
 ) -> Result<(), ScopeStoreError> {
-    let mut statement = connection.prepare("SELECT id FROM scope_grants")?;
-    let ids = statement
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut expected: BTreeMap<String, (u64, BTreeSet<String>)> = BTreeMap::new();
-    let mut scopes = BTreeMap::new();
-    for id in ids {
-        let records = chain(connection, &id)?;
-        let scope = &records[0];
-        if scope.grant.owner != *owner
-            || scope.issued_at < 0
-            || scope.issued_at > last_seen
-            || scope.issued_at >= scope.grant.expires_at
-            || scope
-                .revoked_at
-                .is_some_and(|at| at < scope.issued_at || at > last_seen)
-            || scope.charged_attempts > scope.grant.max_charged_attempts
-            || scope.charged_resources.len() > scope.grant.max_distinct_resources as usize
-            || records.iter().skip(1).any(|p| {
-                p.issued_at > scope.issued_at
-                    || scope.issued_at < p.grant.not_before
-                    || scope.issued_at >= p.grant.expires_at
-                    || p.revoked_at.is_some_and(|at| at < scope.issued_at)
-            })
-        {
-            return Err(ScopeStoreError::Corrupt);
-        }
-        expected.insert(id.clone(), (0, BTreeSet::new()));
-        scopes.insert(id, scope.clone());
-    }
-    let actions = all_actions(connection)?;
-    for record in &actions {
-        let ancestry = chain(connection, &record.action.scope_id)?;
-        record
-            .evidence
-            .validate_for(&ancestry[0].grant, &record.action, record.reserved_at)?;
-        if let Some(at) = record.dispatch_claimed_at {
-            record
-                .evidence
-                .validate_for(&ancestry[0].grant, &record.action, at)?;
-            if ancestry.iter().any(|scope| {
-                at < scope.grant.not_before
-                    || at >= scope.grant.expires_at
-                    || scope.revoked_at.is_some_and(|revoked| revoked < at)
-            }) {
-                return Err(ScopeStoreError::Corrupt);
-            }
-        }
-        if record.action.owner != *owner
-            || record.reserved_at > last_seen
-            || record.reserved_at < ancestry[0].issued_at
-            || record.dispatch_claimed_at.is_some_and(|at| {
-                at < record.reserved_at || at > last_seen || at >= record.evidence.expires_at
-            })
-            || record.finished_at.is_some_and(|at| {
-                at < record.dispatch_claimed_at.unwrap_or(record.reserved_at) || at > last_seen
-            })
-            || ancestry.iter().any(|s| {
-                record.reserved_at < s.grant.not_before
-                    || record.reserved_at >= s.grant.expires_at
-                    || s.revoked_at.is_some_and(|at| at < record.reserved_at)
-            })
-        {
-            return Err(ScopeStoreError::Corrupt);
-        }
-        match record.state {
-            ExecutionState::Reserved
-                if record.dispatch_claimed_at.is_some() || record.finished_at.is_some() =>
-            {
-                return Err(ScopeStoreError::Corrupt);
-            }
-            ExecutionState::DispatchClaimed
-                if record.dispatch_claimed_at.is_none() || record.finished_at.is_some() =>
-            {
-                return Err(ScopeStoreError::Corrupt);
-            }
-            ExecutionState::ApiAccepted
-                if record.dispatch_claimed_at.is_none() || record.finished_at.is_none() =>
-            {
-                return Err(ScopeStoreError::Corrupt);
-            }
-            ExecutionState::Rejected if record.finished_at.is_none() => {
-                return Err(ScopeStoreError::Corrupt);
-            }
-            _ => {}
-        }
-        for scope in ancestry {
-            let count = expected
-                .get_mut(&scope.grant.scope_id)
-                .ok_or(ScopeStoreError::Corrupt)?;
-            count.0 = count.0.checked_add(1).ok_or(ScopeStoreError::Corrupt)?;
-            count.1.insert(record.action.resource.clone());
-        }
-    }
-    for (id, (count, resources)) in expected {
-        let scope = scopes.get(&id).ok_or(ScopeStoreError::Corrupt)?;
-        if scope.charged_attempts != count || scope.charged_resources != resources {
-            return Err(ScopeStoreError::Corrupt);
-        }
-    }
-    verify_events(connection, &scopes, &actions, last_seen)
-}
-
-fn verify_events(
-    connection: &Connection,
-    scopes: &BTreeMap<String, ScopeRecord>,
-    actions: &[ActionRecord],
-    last_seen: i64,
-) -> Result<(), ScopeStoreError> {
-    let mut statement =
-        connection.prepare("SELECT sequence, record FROM scope_events ORDER BY sequence")?;
-    let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
-    let mut sequence = 0_u64;
-    let mut seen: BTreeMap<(String, EventKind), u64> = BTreeMap::new();
-    let action_map: BTreeMap<_, _> = actions
-        .iter()
-        .map(|a| (a.action.action_id.as_str(), a))
-        .collect();
-    let mut previous_time = 0;
-    for row in rows {
-        let (sql_sequence, json) = row?;
-        let event: AuthorityEvent = serde_json::from_str(&json)?;
-        sequence += 1;
-        let scope = scopes
-            .get(&event.scope_id)
-            .ok_or(ScopeStoreError::Corrupt)?;
-        if event.sequence != sequence
-            || sql_sequence as u64 != sequence
-            || event
-                .observed_at
-                .is_some_and(|at| at < previous_time || at > last_seen)
-        {
-            return Err(ScopeStoreError::Corrupt);
-        }
-        if let Some(at) = event.observed_at {
-            previous_time = at;
-        }
-        let key = (
-            event
-                .action_id
-                .clone()
-                .unwrap_or_else(|| event.scope_id.clone()),
-            event.kind,
-        );
-        if seen.insert(key, sequence).is_some() {
-            return Err(ScopeStoreError::Corrupt);
-        }
-        if event.kind != EventKind::ScopeIssued
-            && !seen.contains_key(&(event.scope_id.clone(), EventKind::ScopeIssued))
-        {
-            return Err(ScopeStoreError::Corrupt);
-        }
-        if matches!(
-            event.kind,
-            EventKind::ScopeIssued | EventKind::AttemptCharged | EventKind::DispatchClaimed
-        ) {
-            let mut ancestor = Some(scope);
-            while let Some(current) = ancestor {
-                if seen.contains_key(&(current.grant.scope_id.clone(), EventKind::ScopeRevoked))
-                    || !seen.contains_key(&(current.grant.scope_id.clone(), EventKind::ScopeIssued))
-                {
-                    return Err(ScopeStoreError::Corrupt);
-                }
-                ancestor = current
-                    .grant
-                    .parent_id
-                    .as_ref()
-                    .map(|id| scopes.get(id).ok_or(ScopeStoreError::Corrupt))
-                    .transpose()?;
-            }
-        }
-        if let Some(id) = &event.action_id {
-            let action = action_map
-                .get(id.as_str())
-                .ok_or(ScopeStoreError::Corrupt)?;
-            if event.scope_id != action.action.scope_id || event.content_digest != action.digest {
-                return Err(ScopeStoreError::Corrupt);
-            }
-            let correct = match event.kind {
-                EventKind::AttemptCharged => event.observed_at == Some(action.reserved_at),
-                EventKind::DispatchClaimed => {
-                    event.observed_at == action.dispatch_claimed_at
-                        && action.dispatch_claimed_at.is_some()
-                }
-                EventKind::AttemptFinished => {
-                    event.observed_at == action.finished_at && action.finished_at.is_some()
-                }
-                EventKind::Interrupted => {
-                    event.observed_at.is_none()
-                        && action.state == ExecutionState::Unknown
-                        && action.finished_at.is_none()
-                }
-                _ => false,
-            };
-            if !correct {
-                return Err(ScopeStoreError::Corrupt);
-            }
-            if event.kind != EventKind::AttemptCharged
-                && !seen.contains_key(&(id.clone(), EventKind::AttemptCharged))
-            {
-                return Err(ScopeStoreError::Corrupt);
-            }
-            if matches!(
-                event.kind,
-                EventKind::AttemptFinished | EventKind::Interrupted
-            ) && action.dispatch_claimed_at.is_some()
-                && !seen.contains_key(&(id.clone(), EventKind::DispatchClaimed))
-            {
-                return Err(ScopeStoreError::Corrupt);
-            }
-        } else if event.content_digest != scope.digest
-            || !match event.kind {
-                EventKind::ScopeIssued => event.observed_at == Some(scope.issued_at),
-                EventKind::ScopeRevoked => {
-                    event.observed_at == scope.revoked_at && scope.revoked_at.is_some()
-                }
-                _ => false,
-            }
-        {
-            return Err(ScopeStoreError::Corrupt);
-        }
-    }
-    for scope in scopes.values() {
-        if !seen.contains_key(&(scope.grant.scope_id.clone(), EventKind::ScopeIssued))
-            || (scope.revoked_at.is_some()
-                && !seen.contains_key(&(scope.grant.scope_id.clone(), EventKind::ScopeRevoked)))
-        {
-            return Err(ScopeStoreError::Corrupt);
-        }
-    }
-    for action in actions {
-        for (required, kind) in [
-            (true, EventKind::AttemptCharged),
-            (
-                action.dispatch_claimed_at.is_some(),
-                EventKind::DispatchClaimed,
-            ),
-            (action.finished_at.is_some(), EventKind::AttemptFinished),
-            (
-                action.state == ExecutionState::Unknown && action.finished_at.is_none(),
-                EventKind::Interrupted,
-            ),
-        ] {
-            if required && !seen.contains_key(&(action.action.action_id.clone(), kind)) {
-                return Err(ScopeStoreError::Corrupt);
-            }
-        }
-    }
-    Ok(())
+    read_evidence(connection, owner, last_seen)?
+        .validate()
+        .map_err(|_| ScopeStoreError::Corrupt)
 }
 
 #[cfg(test)]

@@ -2385,6 +2385,8 @@ dependencies = [
  "glob-match",
  "indicatif",
  "libc",
+ "opaque-approval",
+ "opaque-bounded-work",
  "opaque-core",
  "rusqlite",
  "serde",

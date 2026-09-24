@@ -94,6 +94,7 @@ nav:
       - Boundaries and Evidence: architecture.md
       - Deployment: deployment.md
       - Evidence Verification: evidence-checkpoints.md
+      - Scope Evidence: scope-evidence.md
       - Bounded Tasks: bounded-work.md
       - Workload Attestation: workload-attestation.md
   - Evaluate:
@@ -131,6 +132,7 @@ nav:
           - Audit Analytics: audit-analytics.md
           - Building on the Core: reusable-core.md
           - Scoped Support Workflow: scoped-authority.md
+          - Reproduce Scope Recovery: scope-recovery.md
           - Authority Policy Manifests: authority-policy.md
           - Coverage and Assertions: testing-coverage.md
           - Organization Architecture: enterprise-architecture.md

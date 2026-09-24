@@ -61,6 +61,24 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Export a stopped scope ledger without recovery or mutation, then sign it.
+    CreateScope {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        private_key: PathBuf,
+        #[arg(long)]
+        enrollment: PathBuf,
+        /// Previous checkpoint and its exact export are required together.
+        #[arg(long, requires = "previous_export")]
+        previous: Option<PathBuf>,
+        #[arg(long, requires = "previous")]
+        previous_export: Option<PathBuf>,
+        #[arg(long)]
+        build_identity: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
     Verify {
         #[arg(long)]
         enrollment: PathBuf,
@@ -68,6 +86,23 @@ enum Command {
         checkpoint: PathBuf,
         #[arg(long)]
         export: PathBuf,
+        #[arg(long)]
+        expected_checkpoint_sha256: Option<String>,
+    },
+    /// Verify a scope export and the retained historical human-review signatures.
+    VerifyScopeReviews {
+        #[arg(long)]
+        enrollment: PathBuf,
+        #[arg(long)]
+        checkpoint: PathBuf,
+        #[arg(long)]
+        export: PathBuf,
+        /// JSON array of retained scope DecisionReceipts, never private keys.
+        #[arg(long)]
+        receipts: PathBuf,
+        /// Independently enrolled review broker key, not a key from the receipts.
+        #[arg(long)]
+        broker_public_key: String,
         #[arg(long)]
         expected_checkpoint_sha256: Option<String>,
     },
@@ -268,20 +303,99 @@ fn run(cli: Cli) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
                 serde_json::json!({"ok":true,"checkpoint_sha256":checkpoint_digest(&checkpoint)?,"export_sha256":checkpoint.payload.export_sha256,"scope":"authenticated_instrumented_snapshot","global_completeness":"unknown","authority_recovery":"not_established"}),
             )
         }
+        Command::CreateScope {
+            database,
+            private_key,
+            enrollment,
+            previous,
+            previous_export,
+            build_identity,
+            output,
+        } => {
+            let trust: ProducerTrust = document(&enrollment)?;
+            let bytes = Zeroizing::new(read(&private_key, 32, true)?);
+            let seed: &[u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "invalid private key length")?;
+            let key = SigningKey::from_bytes(seed);
+            let prior: Option<SignedCheckpoint> = previous.as_deref().map(document).transpose()?;
+            let prior_export = previous_export
+                .as_deref()
+                .map(|p| read(p, MAX_EXPORT_BYTES, false))
+                .transpose()?;
+            let previous = match (&prior, &prior_export) {
+                (Some(checkpoint), Some(export)) => Some((checkpoint, export.as_slice())),
+                (None, None) => None,
+                _ => return Err("previous checkpoint and export are required together".into()),
+            };
+            let owner = opaque_core::scope::AuthorityOwner {
+                tenant_id: trust.scope.tenant_id.clone(),
+                broker_id: trust.scope.broker_id.clone(),
+                generation: trust.scope.generation.clone(),
+            };
+            let evidence =
+                opaque_bounded_work::scope_store::ScopeStore::export_stopped(&database, &owner)?;
+            let (checkpoint, export) =
+                create_scope_checkpoint(&evidence, &trust, &key, previous, build_identity)?;
+            std::fs::DirBuilder::new().mode(0o700).create(&output)?;
+            write(&output.join("scope.json"), &export)?;
+            write(&output.join("checkpoint.json"), &canonical(&checkpoint)?)?;
+            write(
+                &output.join("retention-request.json"),
+                &canonical(&retention_request(&checkpoint)?)?,
+            )?;
+            File::open(&output)?.sync_all()?;
+            Ok(
+                serde_json::json!({"ok":true,"checkpoint_sha256":checkpoint_digest(&checkpoint)?,"export_sha256":checkpoint.payload.export_sha256,
+                "evidence_format":"scope_ledger_v1","scope_count":evidence.scopes.len(),"action_count":evidence.actions.len(),"event_count":evidence.events.len(),
+                "scope":"retained_single_owner_ledger","approval_signatures":"not_included","provider_effects":"not_established","global_completeness":"unknown","authority_recovery":"not_established"}),
+            )
+        }
         Command::Verify {
             enrollment,
             checkpoint,
             export,
             expected_checkpoint_sha256,
         } => {
-            let (_, result) = verified(
+            let (checkpoint, result) = verified(
                 &enrollment,
                 &checkpoint,
                 &export,
                 expected_checkpoint_sha256.as_deref(),
             )?;
             Ok(
-                serde_json::json!({"ok":true,"checkpoint_sha256":result.checkpoint_sha256,"export_sha256":result.export_sha256,"producer":"matches_enrolled_public_key","checkpoint_pin":if expected_checkpoint_sha256.is_some() { "matched" } else { "not_supplied" },"freshness":if expected_checkpoint_sha256.is_some() { "reference_match_only_latest_source_not_checked" } else { "not_checked_no_checkpoint_pin" },"history":"not_checked_single_checkpoint","independent_retention":"not_checked","global_completeness":"unknown"}),
+                serde_json::json!({"ok":true,"checkpoint_sha256":result.checkpoint_sha256,"export_sha256":result.export_sha256,"producer":"matches_enrolled_public_key","evidence_format":if checkpoint.payload.schema_version == SCOPE_CHECKPOINT_VERSION { "scope_ledger_v1" } else { "audit_jsonl_v1" },"checkpoint_pin":if expected_checkpoint_sha256.is_some() { "matched" } else { "not_supplied" },"freshness":if expected_checkpoint_sha256.is_some() { "reference_match_only_latest_source_not_checked" } else { "not_checked_no_checkpoint_pin" },"history":"not_checked_single_checkpoint","independent_retention":"not_checked","global_completeness":"unknown"}),
+            )
+        }
+        Command::VerifyScopeReviews {
+            enrollment,
+            checkpoint,
+            export,
+            receipts,
+            broker_public_key,
+            expected_checkpoint_sha256,
+        } => {
+            let trust: ProducerTrust = document(&enrollment)?;
+            let checkpoint: SignedCheckpoint = document(&checkpoint)?;
+            if checkpoint.payload.schema_version != SCOPE_CHECKPOINT_VERSION {
+                return Err("requires a scope checkpoint".into());
+            }
+            let bytes = read(&export, MAX_EXPORT_BYTES, false)?;
+            let result = verify_checkpoint(&checkpoint, &trust, &bytes)?;
+            pinned(
+                &result.checkpoint_sha256,
+                expected_checkpoint_sha256.as_deref(),
+            )?;
+            let evidence = opaque_core::scope_evidence::ScopeEvidence::decode(&bytes)?;
+            let receipts: Vec<opaque_core::scope_review::DecisionReceipt> =
+                serde_json::from_slice(&read(&receipts, MAX_EXPORT_BYTES, false)?)?;
+            unhex::<32>(&broker_public_key)?;
+            evidence.verify_reviews(&receipts, &broker_public_key)?;
+            Ok(
+                serde_json::json!({"ok":true,"checkpoint_sha256":result.checkpoint_sha256,"export_sha256":result.export_sha256,
+                "review_signatures":"verified_historical_bindings","human_presence":"not_established","current_authority":"not_established",
+                "checkpoint_pin":if expected_checkpoint_sha256.is_some(){"matched"}else{"not_supplied"},"global_completeness":"unknown"}),
             )
         }
         Command::PrepareRetention {
