@@ -120,6 +120,8 @@ struct Legacy {
 struct LegacyProfile {
     endpoint: String,
     token_file: PathBuf,
+    #[serde(default)]
+    ca_certificate_file: Option<PathBuf>,
 }
 fn generation() -> u64 {
     1
@@ -141,6 +143,11 @@ impl Legacy {
         if self.generation == 0
             || self.profile.endpoint.is_empty()
             || !self.profile.token_file.is_absolute()
+            || self
+                .profile
+                .ca_certificate_file
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
             || !opaque_core::identity::PrincipalId::parse(&self.reviewer_id)
                 .is_ok_and(|p| p.is_human())
             || self.reviewer_public_key.len() != 64
