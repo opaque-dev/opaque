@@ -2371,7 +2371,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "opaque"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2402,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-approval"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2438,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-approve-helper"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "libc",
  "objc2",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-approver"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-bounded-work"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -2499,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -2536,7 +2536,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "opaque-federation-runtime"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2578,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-native-approval"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2",
  "libc",
@@ -2595,11 +2595,11 @@ dependencies = [
 
 [[package]]
 name = "opaque-policy-kernel"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "opaque-providers"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -2625,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-sandbox"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "landlock",
  "libc",
@@ -2643,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-showcase"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -2674,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-tenant"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "libc",
  "opaque-approval",
@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "opaque-web"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "bytes",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "opaqued"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",

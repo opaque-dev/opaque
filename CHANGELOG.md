@@ -9,6 +9,8 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-26
+
 ## [0.5.0] - 2026-09-16
 
 ### Added
