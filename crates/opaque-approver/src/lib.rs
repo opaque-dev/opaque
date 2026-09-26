@@ -5,3 +5,4 @@ pub mod client;
 pub mod custody;
 pub mod instance;
 pub mod review;
+pub mod scope_review;

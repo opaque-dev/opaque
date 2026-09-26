@@ -42,7 +42,9 @@ use tracing::{info, warn};
 
 use crate::pairing::PairingManager;
 use crate::pairing::store::PairedDevice;
+mod scope;
 mod workstation;
+pub use scope::{PendingScopeReviews, ScopeReviewKey, ScopeReviewService, ScopeReviewServiceError};
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -174,6 +176,7 @@ pub(crate) struct ServerState {
     timeout: Duration,
     workstation_pending: std::sync::Mutex<HashMap<String, workstation::PendingWorkstation>>,
     remote: Option<Arc<crate::remote::RemoteApprovals>>,
+    scope_reviews: Option<Arc<dyn ScopeReviewService>>,
 }
 
 impl std::fmt::Debug for ServerState {
@@ -384,6 +387,7 @@ impl ApprovalServer {
             timeout: Duration::from_secs(config.timeout_secs),
             workstation_pending: std::sync::Mutex::new(HashMap::new()),
             remote: None,
+            scope_reviews: None,
         });
 
         Ok(Self { state, config })
@@ -394,6 +398,14 @@ impl ApprovalServer {
         Arc::get_mut(&mut self.state)
             .expect("remote routing configured before server use")
             .remote = Some(remote);
+        self
+    }
+
+    /// Attach host-owned scope review authority before exposing a handle/start.
+    pub fn with_scope_reviews(mut self, service: Arc<dyn ScopeReviewService>) -> Self {
+        Arc::get_mut(&mut self.state)
+            .expect("scope reviews configured before server use")
+            .scope_reviews = Some(service);
         self
     }
 
@@ -513,6 +525,7 @@ fn build_tls_config(cert_der: &[u8], key_der: &[u8]) -> Result<rustls::ServerCon
 fn build_router(state: Arc<ServerState>) -> Router {
     Router::new()
         .merge(workstation::routes())
+        .merge(scope::routes())
         .route(
             "/notifications/pending",
             get(workstation::notice_feed_handler),
@@ -1390,6 +1403,7 @@ mod tests {
         ));
         let state = ServerState {
             remote: None,
+            scope_reviews: None,
             pending: Mutex::new(HashMap::new()),
             pairing,
             timeout: Duration::from_secs(60),

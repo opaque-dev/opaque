@@ -25,6 +25,7 @@ mod agent_process;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod ipc_tests;
 mod policy_regression;
+mod scope_command;
 mod service;
 mod setup;
 mod ui;
@@ -177,6 +178,11 @@ enum Cmd {
     Task {
         #[command(subcommand)]
         action: TaskAction,
+    },
+    /// Issue and inspect bounded support-case authority.
+    Scope {
+        #[command(subcommand)]
+        action: scope_command::Action,
     },
     /// Manage GitLab CI/CD variables.
     Gitlab {
@@ -2842,6 +2848,13 @@ async fn main() {
         Cmd::Version => ("version", serde_json::Value::Null),
         Cmd::Whoami => ("whoami", serde_json::Value::Null),
         Cmd::Leases => ("leases", serde_json::Value::Null),
+        Cmd::Scope { action } => match scope_command::params(action) {
+            Ok(request) => request,
+            Err(error) => {
+                ui::error(&error);
+                std::process::exit(EXIT_USAGE);
+            }
+        },
         Cmd::Task { action } => match task_command_params(action) {
             Ok(request) => request,
             Err(error) => {
@@ -3466,7 +3479,9 @@ fn provisioning_command_params(
     })
 }
 
-fn read_operation_params(path: Option<&std::path::Path>) -> Result<serde_json::Value, String> {
+pub(crate) fn read_operation_params(
+    path: Option<&std::path::Path>,
+) -> Result<serde_json::Value, String> {
     use std::io::Read;
     let Some(path) = path else {
         return Ok(serde_json::json!({}));

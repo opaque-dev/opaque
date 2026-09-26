@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 impl Enclave {
     /// Flush the configured sinks off the executor. Cancellation cannot free a
     /// worker's permit while it still owns a blocking durability wait.
-    pub(super) async fn confirm_audit(&self, dispatched: bool) -> Result<(), EnclaveError> {
+    pub(crate) async fn confirm_audit(&self, dispatched: bool) -> Result<(), EnclaveError> {
         static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
         let unavailable = || {
             EnclaveError::Internal(if dispatched {

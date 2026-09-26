@@ -28,3 +28,4 @@ pub mod fido2;
 pub mod pairing;
 pub mod push;
 pub mod remote;
+pub mod scope_review;
