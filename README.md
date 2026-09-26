@@ -20,6 +20,11 @@ The hosted demo uses synthetic data and a separate workflow; it does not connect
 to your repository. See the [demo guide](docs/hosted-demo.md) for session limits
 and approval methods.
 
+To run the same story on your own machine, clone the
+[Harborlight quickstart](https://github.com/opaque-dev/harborlight):
+four acts, fifteen minutes, no external accounts, verified in CI against the
+released package.
+
 ## Run a local operation
 
 Follow the [tutorial](docs/tutorial.md) to configure credentials and policy, then
