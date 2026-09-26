@@ -437,9 +437,6 @@ where
         };
     }
     match request.send().await {
-        Ok(response) if response.status().as_u16() == 204 => {
-            outcome(SlotState::ApiAccepted, "api_accepted")
-        }
         Ok(mut response) if response.status().as_u16() == 200 => {
             // Bind direct provider evidence where supported. Never follow its
             // supplied URLs, and never retry a malformed/partial response.

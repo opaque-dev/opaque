@@ -98,10 +98,10 @@ impl Connector {
         })
     }
     /// Exactly one POST. A head that moved since review, or a head that cannot
-    /// be re-read, is `Rejected`: nothing was sent. A 2xx acknowledgment is
-    /// `ApiAccepted`, never completion. Everything else is `Unknown`, and
-    /// `workflow_dispatch` has no idempotency key, so the run may or may not
-    /// exist; the caller must never send again.
+    /// be re-read, is `Rejected`: nothing was sent. GitHub's documented `204`
+    /// acknowledgment is `ApiAccepted`, never completion. Everything else is
+    /// `Unknown`, and `workflow_dispatch` has no idempotency key, so the run may
+    /// or may not exist; the caller must never send again.
     pub async fn write(&self, target: &WorkflowTarget, head_sha: &str) -> Outcome {
         let Ok(target) = Self::target(target) else {
             return Outcome::Unknown;
