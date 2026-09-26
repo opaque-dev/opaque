@@ -10,7 +10,11 @@ use std::{fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt, path::Path};
 pub const API_VERSION: &str = "policy.opaque.dev/v1alpha1";
 pub const KIND: &str = "AuthorityPolicy";
 pub const MAX_BYTES: usize = 64 * 1024;
+/// Fixed support-case status contract; maps to broker `support.case.set_status`.
 pub const OPERATION: &str = "support.case.setStatus";
+/// GitHub Actions `workflow_dispatch`; maps to broker `github.dispatch_staging_workflow`.
+pub const DISPATCH_OPERATION: &str = "github.workflow.dispatch";
+pub const MAX_WORKFLOWS: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,14 +47,61 @@ pub enum Mode {
     #[default]
     Enforce,
 }
+/// `operation` selects the kind; each kind has exactly one kind-specific field.
+/// A manifest that carries another kind's field is rejected, never ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Authority {
     pub operation: String,
-    pub allowed_statuses: Vec<Status>,
+    /// `support.case.setStatus` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_statuses: Option<Vec<Status>>,
+    /// `github.workflow.dispatch` only: the complete set of dispatch targets a
+    /// scope may select. Anything else is denied before review or provider I/O.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<Vec<WorkflowTarget>>,
     pub max_resources: u32,
     pub max_attempts: u64,
     pub max_duration: String,
+}
+/// One `workflow_dispatch` target: repository, workflow file and branch. The
+/// scope resource string is `{repository}:{path}:{ref}`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowTarget {
+    pub repository: String,
+    pub path: String,
+    #[serde(rename = "ref")]
+    pub git_ref: String,
+}
+impl WorkflowTarget {
+    pub fn validate(&self) -> Result<(), String> {
+        crate::release::validate_repository(&self.repository)?;
+        crate::release::validate_workflow_path(&self.path)?;
+        crate::release::validate_branch(&self.git_ref)?;
+        if self.resource().len() > 256 {
+            return Err("workflow target exceeds the scope resource length".into());
+        }
+        Ok(())
+    }
+    /// Colons never appear in a valid repository, workflow path or branch, so
+    /// the resource string splits back into exactly three components.
+    pub fn resource(&self) -> String {
+        format!("{}:{}:{}", self.repository, self.path, self.git_ref)
+    }
+    pub fn parse(resource: &str) -> Result<Self, String> {
+        let mut parts = resource.split(':');
+        let target = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(repository), Some(path), Some(git_ref), None) => Self {
+                repository: repository.into(),
+                path: path.into(),
+                git_ref: git_ref.into(),
+            },
+            _ => return Err("workflow resource must be repository:path:ref".into()),
+        };
+        target.validate()?;
+        Ok(target)
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -149,20 +200,45 @@ impl AuthorityPolicy {
         ] {
             reference(value)?;
         }
-        if self.spec.authority.operation != OPERATION || !self.spec.evaluators.is_empty() {
+        if !self.spec.evaluators.is_empty() {
             return Err("unsupported operation or evaluator requirement".into());
         }
         let a = &mut self.spec.authority;
-        if !(1..=100).contains(&a.max_resources)
-            || !(1..=10000).contains(&a.max_attempts)
-            || a.allowed_statuses.is_empty()
-            || a.allowed_statuses.len() > 3
-        {
+        if !(1..=100).contains(&a.max_resources) || !(1..=10000).contains(&a.max_attempts) {
             return Err("authority bounds exceed supported limits".into());
         }
-        a.allowed_statuses.sort();
-        if a.allowed_statuses.windows(2).any(|w| w[0] == w[1]) {
-            return Err("duplicate allowed status".into());
+        match (
+            a.operation.as_str(),
+            &mut a.allowed_statuses,
+            &mut a.workflows,
+        ) {
+            (OPERATION, Some(statuses), None) => {
+                if statuses.is_empty() || statuses.len() > 3 {
+                    return Err("authority bounds exceed supported limits".into());
+                }
+                statuses.sort();
+                if statuses.windows(2).any(|w| w[0] == w[1]) {
+                    return Err("duplicate allowed status".into());
+                }
+            }
+            (DISPATCH_OPERATION, None, Some(workflows)) => {
+                if workflows.is_empty() || workflows.len() > MAX_WORKFLOWS {
+                    return Err("authority bounds exceed supported limits".into());
+                }
+                for target in workflows.iter() {
+                    target.validate()?;
+                }
+                workflows.sort();
+                if workflows.windows(2).any(|w| w[0] == w[1]) {
+                    return Err("duplicate workflow target".into());
+                }
+            }
+            (OPERATION | DISPATCH_OPERATION, _, _) => {
+                return Err(
+                    "allowedStatuses belongs to support.case.setStatus and workflows to github.workflow.dispatch; supply exactly the selected kind's field".into(),
+                );
+            }
+            _ => return Err("unsupported operation or evaluator requirement".into()),
         }
         a.max_duration = format!("{}s", duration_seconds(&a.max_duration)?);
         let identity = Identity {

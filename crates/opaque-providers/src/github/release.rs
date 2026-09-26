@@ -14,7 +14,7 @@ use super::{DEFAULT_GITHUB_TOKEN_REF, GITHUB_TOKEN_REF_ENV};
 use crate::internal_resolve::CompositeResolver;
 use opaque_core::resolver::SecretResolver;
 
-const API_VERSION: &str = "2026-03-10";
+use super::workflow::{self, Acknowledgment};
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WORKFLOW_BYTES: usize = 128 * 1024;
 const MAX_RUN_PAGES: u32 = 3;
@@ -129,15 +129,7 @@ impl ReleaseClient {
     }
 
     fn url(&self, action: &StagingReleaseAction, suffix: &[&str]) -> Result<reqwest::Url, String> {
-        let (owner, repo) = action.repo.split_once('/').ok_or_else(unavailable)?;
-        let mut url = self.base.clone();
-        {
-            let mut path = url.path_segments_mut().map_err(|_| unavailable())?;
-            path.pop_if_empty()
-                .extend(["repos", owner, repo])
-                .extend(suffix.iter().copied());
-        }
-        Ok(url)
+        workflow::repository_url(&self.base, &action.repo, suffix).map_err(|_| unavailable())
     }
 
     fn request(
@@ -146,12 +138,7 @@ impl ReleaseClient {
         url: reqwest::Url,
         token: &str,
     ) -> reqwest::RequestBuilder {
-        self.http
-            .request(method, url)
-            .bearer_auth(token)
-            .header("accept", "application/vnd.github+json")
-            .header("x-github-api-version", API_VERSION)
-            .header("user-agent", "opaqued")
+        workflow::headers(self.http.request(method, url).bearer_auth(token))
     }
 
     async fn get<T: serde::de::DeserializeOwned>(
@@ -484,12 +471,11 @@ where
                 provider_run_id: Some(body.workflow_run_id),
             }
         }
-        Ok(response)
-            if response.status().is_client_error() && response.status().as_u16() != 408 =>
-        {
-            outcome(SlotState::Rejected, "provider_rejected")
-        }
-        _ => outcome(SlotState::Unknown, "transport_unknown"),
+        other => match workflow::acknowledge(other) {
+            Acknowledgment::Accepted => outcome(SlotState::ApiAccepted, "api_accepted"),
+            Acknowledgment::Rejected => outcome(SlotState::Rejected, "provider_rejected"),
+            Acknowledgment::Unknown => outcome(SlotState::Unknown, "transport_unknown"),
+        },
     }
 }
 
@@ -704,6 +690,7 @@ fn observe_run(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::github::workflow::API_VERSION;
     use opaque_core::release::STAGING_RELEASE_OPERATION;
     use opaque_core::task::TaskAction;
     use wiremock::matchers::{body_json, header, method, path, query_param};
