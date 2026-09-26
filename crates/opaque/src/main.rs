@@ -4410,12 +4410,56 @@ fn policy_check_report(
     // connection attestor never populates (codesign_team_id off macOS). Such
     // a rule still loads. It simply never matches a real client, so this
     // warns rather than failing the check.
-    let warnings = platform_policy_warnings(&config.rules, codesign_enforceable);
+    let mut warnings = platform_policy_warnings(&config.rules, codesign_enforceable);
+
+    // Keys inside [[rules]] tables that no policy field reads. serde ignores
+    // them, so a mistyped matcher key or a daemon setting appended after the
+    // last rule loads cleanly and does nothing. Warn, by name and location.
+    let unknown = PolicyConfig::unknown_rule_keys(&contents)
+        .map_err(|e| format!("TOML parse error in {}: {e}", path.display()))?;
+    warnings.extend(unknown.iter().map(unknown_rule_key_warning));
 
     Ok((
         format!("policy OK: {} rules loaded", config.rules.len()),
         warnings,
     ))
+}
+
+/// Daemon-level settings people append to a generated config. TOML has no way
+/// back to the top level once a table has started, so an appended line lands
+/// in the last rule's final sub-table and is ignored there.
+const DAEMON_LEVEL_KEYS: &[&str] = &[
+    "approval_backend",
+    "data_dir",
+    "require_seal",
+    "enforce_agent_sessions",
+    "agent_session_ttl_secs",
+    "audit_retention_days",
+    "enable_task_grants",
+    "workstation_test_mode",
+    "execve_default",
+];
+
+fn unknown_rule_key_warning(finding: &opaque_core::policy_document::UnknownRuleKey) -> String {
+    let rule = match &finding.rule_name {
+        Some(name) => format!("rules[{}] ({name:?})", finding.rule_index),
+        None => format!("rules[{}]", finding.rule_index),
+    };
+    if DAEMON_LEVEL_KEYS.contains(&finding.key.as_str()) {
+        format!(
+            "{rule}: `{}` is a daemon-level setting but sits inside [{}], where it is ignored. \
+             TOML cannot return to the top level after a table: move the line above the first \
+             [[rules]] table.",
+            finding.key, finding.table
+        )
+    } else {
+        format!(
+            "{rule}: unknown key `{}` in [{}] is ignored. Known keys: {}.",
+            finding.key,
+            finding.table,
+            finding.known.join(", ")
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7663,6 +7707,121 @@ exe_path = "/usr/bin/claude*"
         // The real CLI entry point (this host's actual platform) also loads
         // the codesign rule rather than refusing it.
         assert!(check_toml(codesign_rule).is_ok());
+    }
+
+    /// Appending a daemon key to a generated preset config puts it inside the
+    /// last rule's [rules.approval] table. The config still loads, so the
+    /// check must say where the key landed and what to do about it.
+    #[test]
+    fn policy_check_warns_when_daemon_key_is_appended_after_last_rule() {
+        let appended = format!(
+            "{}\napproval_backend = \"insecure_auto_approve\"\ndata_dir = \"/private/tmp/state\"\n",
+            PRESET_SAFE_DEMO
+        );
+        let (message, warnings) = check_toml_for_platform(&appended, true).unwrap();
+        assert_eq!(message, "policy OK: 1 rules loaded");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        for (warning, key) in warnings.iter().zip(["approval_backend", "data_dir"]) {
+            assert!(warning.contains(&format!("`{key}`")), "{warning}");
+            assert!(warning.contains("daemon-level setting"), "{warning}");
+            assert!(warning.contains("[rules.approval]"), "{warning}");
+            assert!(
+                warning.contains("rules[0] (\"allow-test-noop\")"),
+                "{warning}"
+            );
+            assert!(warning.contains("above the first [[rules]]"), "{warning}");
+        }
+        // The same keys above the first table are read normally: no warning.
+        let prepended = format!(
+            "approval_backend = \"insecure_auto_approve\"\ndata_dir = \"/private/tmp/state\"\n\n{}",
+            PRESET_SAFE_DEMO
+        );
+        let (_, warnings) = check_toml_for_platform(&prepended, true).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// A matcher key the engine does not have loads without error and
+    /// enforces nothing. The check names it and lists what the table accepts.
+    #[test]
+    fn policy_check_warns_on_unknown_matcher_key() {
+        let toml = r#"
+[[rules]]
+name = "allow-github-list-secrets"
+operation_pattern = "github.list_secrets"
+allow = true
+client_types = ["agent"]
+
+[rules.workspace]
+require = true
+
+[rules.approval]
+require = "first_use"
+factors = ["local_bio"]
+"#;
+        let (_, warnings) = check_toml_for_platform(toml, true).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("unknown key `require` in [rules.workspace]"),
+            "{}",
+            warnings[0]
+        );
+        assert!(
+            warnings[0].contains("remote_url_pattern, branch_pattern, require_clean"),
+            "{}",
+            warnings[0]
+        );
+        assert!(
+            warnings[0].contains("rules[0] (\"allow-github-list-secrets\")"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    /// Every shipped preset must pass the check without a single warning, so
+    /// an inert key cannot ship again (codex-agent did, in seven rules).
+    #[test]
+    fn shipped_presets_pass_policy_check_without_warnings() {
+        let presets = available_presets();
+        assert!(presets.len() >= 6);
+        for (name, _, content) in presets {
+            let (message, warnings) = check_toml_for_platform(content, true)
+                .unwrap_or_else(|e| panic!("preset '{name}' failed policy check: {e}"));
+            assert!(message.starts_with("policy OK: "), "{name}: {message}");
+            assert!(
+                warnings.is_empty(),
+                "preset '{name}' produced warnings: {warnings:?}"
+            );
+        }
+    }
+
+    /// Generated configs must keep every top-level key above the first table,
+    /// and must tell the reader so, because appending is the natural edit and
+    /// TOML makes it silently wrong.
+    #[test]
+    fn presets_place_top_level_keys_before_tables_and_say_so() {
+        for (name, _, content) in available_presets() {
+            let mut in_table = false;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('[') {
+                    in_table = true;
+                    continue;
+                }
+                if !in_table || trimmed.starts_with('#') || trimmed.is_empty() {
+                    continue;
+                }
+                let key = trimmed.split('=').next().unwrap().trim();
+                assert!(
+                    !DAEMON_LEVEL_KEYS.contains(&key),
+                    "preset '{name}' places top-level key `{key}` after a table, where TOML \
+                     assigns it to that table"
+                );
+            }
+            assert!(
+                content.contains("ABOVE the first [[rules]] table"),
+                "preset '{name}' header must warn that daemon settings go above the first table"
+            );
+        }
     }
 
     #[test]

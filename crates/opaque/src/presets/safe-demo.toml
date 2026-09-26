@@ -7,6 +7,11 @@
 #
 # Usage:
 #   opaque policy preset safe-demo
+#
+# Daemon settings such as approval_backend, data_dir or require_seal belong
+# ABOVE the first [[rules]] table. TOML has no way back to the top level, so a
+# key appended at the end of this file becomes part of the last rule table and
+# is ignored. `opaque policy check` warns when that has happened.
 
 [[rules]]
 name = "allow-test-noop"
