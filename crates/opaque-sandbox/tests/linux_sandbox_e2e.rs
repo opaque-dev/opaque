@@ -322,15 +322,17 @@ mod linux {
             .expect("tokio runtime");
         let caps = SandboxCapabilities::detect();
         println!(
-            "host: kernel={} bubblewrap={} landlock={} ({}) seccomp={} user_namespaces={}",
+            "host: kernel={} bubblewrap={} ({}) landlock={} ({}) seccomp={} user_namespaces={} ({})",
             std::fs::read_to_string("/proc/sys/kernel/osrelease")
                 .unwrap_or_default()
                 .trim(),
             caps.bubblewrap,
+            caps.bubblewrap_evidence,
             caps.landlock,
             caps.landlock_evidence,
             caps.seccomp,
-            caps.user_namespaces
+            caps.user_namespaces,
+            caps.user_namespaces_evidence
         );
         let required = required();
         let mut report = Report {
@@ -343,13 +345,13 @@ mod linux {
                 NamespaceWrapper::Bubblewrap,
                 "bubblewrap",
                 caps.bubblewrap,
-                "bwrap is not on PATH",
+                caps.bubblewrap_evidence.as_str(),
             ),
             (
                 NamespaceWrapper::Unshare,
                 "unshare",
                 caps.user_namespaces,
-                "unprivileged user namespaces are unavailable",
+                caps.user_namespaces_evidence.as_str(),
             ),
         ] {
             if !available {
@@ -372,10 +374,12 @@ mod linux {
         // Selection must refuse a host with no wrapper at all, before spawning.
         let none = SandboxCapabilities {
             bubblewrap: false,
+            bubblewrap_evidence: "bwrap is not on PATH".into(),
             landlock: caps.landlock,
             landlock_evidence: caps.landlock_evidence.clone(),
             seccomp: caps.seccomp,
             user_namespaces: false,
+            user_namespaces_evidence: "unshare probe exit status: 1: unshare failed".into(),
         };
         let refused = SandboxStrategy::select(&none);
         report.check(

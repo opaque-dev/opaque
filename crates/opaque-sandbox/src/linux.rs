@@ -214,18 +214,29 @@ fn describe_errno(errno: i32) -> String {
 }
 
 /// Describes which sandbox mechanisms are available on this host.
+///
+/// The two namespace wrappers are probed by running them: each executes a
+/// throwaway `true` in the exact namespace shape the sandbox uses, so a
+/// wrapper that exists but cannot build that shape here (no unprivileged
+/// user namespaces, a container without `CAP_SYS_ADMIN`, a kernel where
+/// bwrap cannot bring up loopback) is reported as unavailable with its own
+/// diagnostic instead of failing every exec.
 #[derive(Debug, Clone)]
 pub struct SandboxCapabilities {
-    /// `bwrap` binary found on PATH.
+    /// `bwrap` builds the sandbox shape on this host.
     pub bubblewrap: bool,
+    /// Evidence behind `bubblewrap`: `ok`, or why the probe failed.
+    pub bubblewrap_evidence: String,
     /// Kernel enforces Landlock (ABI probe answered).
     pub landlock: bool,
     /// Evidence behind `landlock`, see [`LandlockProbe::evidence`].
     pub landlock_evidence: String,
     /// seccomp-bpf available.
     pub seccomp: bool,
-    /// Unprivileged user namespaces enabled.
+    /// `unshare` builds the fallback namespace shape on this host.
     pub user_namespaces: bool,
+    /// Evidence behind `user_namespaces`: `ok`, or why the probe failed.
+    pub user_namespaces_evidence: String,
 }
 
 impl SandboxCapabilities {
@@ -238,12 +249,16 @@ impl SandboxCapabilities {
                 "landlock: securityfs does not list the LSM but the kernel answers the ABI probe"
             );
         }
+        let bubblewrap = detect_bubblewrap();
+        let user_namespaces = detect_user_namespaces();
         Self {
-            bubblewrap: detect_bubblewrap(),
+            bubblewrap: bubblewrap.is_ok(),
+            bubblewrap_evidence: evidence_text(&bubblewrap),
             landlock: probe.available(),
             landlock_evidence: probe.evidence(),
             seccomp: detect_seccomp(),
-            user_namespaces: detect_user_namespaces(),
+            user_namespaces: user_namespaces.is_ok(),
+            user_namespaces_evidence: evidence_text(&user_namespaces),
         }
     }
 
@@ -251,12 +266,21 @@ impl SandboxCapabilities {
     pub fn log_capabilities(&self) {
         info!(
             bubblewrap = self.bubblewrap,
+            bubblewrap_evidence = %self.bubblewrap_evidence,
             landlock = self.landlock,
             landlock_evidence = %self.landlock_evidence,
             seccomp = self.seccomp,
             user_namespaces = self.user_namespaces,
+            user_namespaces_evidence = %self.user_namespaces_evidence,
             "linux sandbox capabilities detected"
         );
+    }
+}
+
+fn evidence_text(probe: &Result<(), String>) -> String {
+    match probe {
+        Ok(()) => "ok".into(),
+        Err(reason) => reason.clone(),
     }
 }
 
@@ -276,14 +300,82 @@ pub fn log_startup_capabilities() -> SandboxCapabilities {
     caps
 }
 
-/// Check if `bwrap` is available on PATH.
-fn detect_bubblewrap() -> bool {
-    std::process::Command::new("bwrap")
-        .arg("--version")
+/// How long a wrapper probe may take before it counts as unusable.
+const WRAPPER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `program args...` with no input, discarding stdout, and report why it
+/// failed if it did. Output is read after exit; probes print a line at most.
+fn run_wrapper_probe(program: &str, args: &[&str]) -> Result<(), String> {
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                format!("{program} is not on PATH")
+            } else {
+                format!("{program} cannot be started: {e}")
+            }
+        })?;
+    let deadline = std::time::Instant::now() + WRAPPER_PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{program} probe did not finish within {}s",
+                    WRAPPER_PROBE_TIMEOUT.as_secs()
+                ));
+            }
+            Err(e) => return Err(format!("{program} probe could not be awaited: {e}")),
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    let stderr = stderr.trim();
+    Err(format!(
+        "{program} probe {status}: {}",
+        if stderr.is_empty() {
+            "no diagnostic output"
+        } else {
+            stderr
+        }
+    ))
+}
+
+/// Can `bwrap` build the sandbox shape used by [`build_bubblewrap_args`]
+/// (read-only root, fresh /dev and /proc, PID and network namespaces)?
+fn detect_bubblewrap() -> Result<(), String> {
+    run_wrapper_probe(
+        "bwrap",
+        &[
+            "--ro-bind",
+            "/",
+            "/",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--unshare-pid",
+            "--unshare-net",
+            "--die-with-parent",
+            "--new-session",
+            "--",
+            "true",
+        ],
+    )
 }
 
 /// Check if seccomp-bpf is available. On any remotely modern Linux (3.5+) it is.
@@ -297,15 +389,22 @@ fn detect_seccomp() -> bool {
     result >= 0
 }
 
-/// Check if unprivileged user namespaces are enabled.
-fn detect_user_namespaces() -> bool {
-    std::process::Command::new("unshare")
-        .args(["--user", "--", "true"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Can `unshare` build the fallback shape used by [`build_unshare_args`]
+/// (user, mount, PID and network namespaces with a root mapping)?
+fn detect_user_namespaces() -> Result<(), String> {
+    run_wrapper_probe(
+        "unshare",
+        &[
+            "--user",
+            "--mount",
+            "--pid",
+            "--fork",
+            "--map-root-user",
+            "--net",
+            "--",
+            "true",
+        ],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -352,11 +451,11 @@ impl SandboxStrategy {
             NamespaceWrapper::Unshare
         } else {
             return Err(SandboxError::Setup(format!(
-                "no sandbox strategy available: bwrap is not on PATH and unprivileged user \
-                 namespaces are unavailable (`unshare --user` failed); install bubblewrap or \
-                 enable unprivileged user namespaces (Ubuntu 24.04: \
-                 sysctl kernel.apparmor_restrict_unprivileged_userns=0); landlock: {}",
-                caps.landlock_evidence
+                "no sandbox strategy available: bubblewrap: {}; unshare: {}; install bubblewrap \
+                 or enable unprivileged user namespaces (Ubuntu 24.04: \
+                 sysctl kernel.apparmor_restrict_unprivileged_userns=0; containers need \
+                 CAP_SYS_ADMIN and a seccomp profile that allows unshare); landlock: {}",
+                caps.bubblewrap_evidence, caps.user_namespaces_evidence, caps.landlock_evidence
             )));
         };
         if !caps.landlock {
@@ -1353,10 +1452,21 @@ mod tests {
     ) -> SandboxCapabilities {
         SandboxCapabilities {
             bubblewrap,
+            bubblewrap_evidence: if bubblewrap {
+                "ok".into()
+            } else {
+                "bwrap probe exit status: 1: bwrap: Creating new namespace failed".into()
+            },
             landlock,
             landlock_evidence: "test".into(),
             seccomp,
             user_namespaces,
+            user_namespaces_evidence: if user_namespaces {
+                "ok".into()
+            } else {
+                "unshare probe exit status: 1: unshare: unshare failed: Operation not permitted"
+                    .into()
+            },
         }
     }
 
@@ -1510,11 +1620,41 @@ mod tests {
             message.contains("no sandbox strategy available"),
             "{message}"
         );
-        assert!(message.contains("bubblewrap"), "{message}");
+        // Both wrapper probes explain themselves in the refusal.
+        assert!(
+            message.contains(
+                "bubblewrap: bwrap probe exit status: 1: bwrap: Creating new namespace failed"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("unshare: unshare probe exit status: 1: unshare: unshare failed"),
+            "{message}"
+        );
         assert!(
             message.contains("apparmor_restrict_unprivileged_userns"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn wrapper_probe_reports_missing_programs_and_failures_with_their_stderr() {
+        let missing =
+            run_wrapper_probe("opaque-definitely-missing-wrapper", &["--", "true"]).unwrap_err();
+        assert!(missing.contains("is not on PATH"), "{missing}");
+
+        let failed = run_wrapper_probe(
+            "sh",
+            &["-c", "echo 'setup: Operation not permitted' >&2; exit 3"],
+        )
+        .unwrap_err();
+        assert!(failed.contains("exit status: 3"), "{failed}");
+        assert!(
+            failed.contains("setup: Operation not permitted"),
+            "{failed}"
+        );
+
+        assert_eq!(run_wrapper_probe("sh", &["-c", "exit 0"]), Ok(()));
     }
 
     // -----------------------------------------------------------------------
