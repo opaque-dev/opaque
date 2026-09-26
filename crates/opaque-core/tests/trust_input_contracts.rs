@@ -1124,3 +1124,72 @@ fn publish_identity_aliases_and_source_reference_limits_cannot_mint_duplicate_al
     oversized.title = "A".repeat(161);
     assert_eq!(oversized.validate(), Err(TaskValidationError::Title));
 }
+
+#[test]
+fn mcp_catalog_qualification_admits_at_most_128_tools_without_pagination() {
+    use opaque_core::mcp::{ContractError, Registry};
+    let registry = Registry::from_json(&serde_json::to_vec(&registry()).unwrap()).unwrap();
+    let pinned = registry.routes()[0].upstream_schema().clone();
+    // A captured tools/list result: the enrolled tool plus unrelated tools.
+    let catalog = |count: usize| {
+        let mut tools = vec![json!({"name":"add_note","inputSchema":pinned})];
+        tools.extend((1..count).map(|n| json!({"name":format!("other_{n}")})));
+        serde_json::to_vec(&json!({"tools":tools})).unwrap()
+    };
+    let at_bound = registry.qualify_catalog(&catalog(128)).unwrap();
+    assert_eq!(at_bound.len(), 1);
+    assert!(at_bound[0].compatible);
+    assert_eq!(at_bound[0].diagnostic, "pinned_schema_matches");
+    // One tool past the bound fails closed before any pin is compared, even
+    // though the document is far below the byte limit and unpaginated.
+    let over = catalog(129);
+    assert!(over.len() < opaque_core::mcp::MAX_CATALOG_BYTES / 16);
+    assert_eq!(
+        registry.qualify_catalog(&over).err(),
+        Some(ContractError::InvalidRegistry)
+    );
+}
+
+#[test]
+fn mcp_version_two_bounds_the_admitted_schema_at_64_kib_before_validation() {
+    use opaque_core::mcp::{ContractError, MAX_UPSTREAM_SCHEMA_BYTES, Registry};
+    // Every node, name, bound and depth here satisfies the admitted subset;
+    // only its serialized size is exceptional.
+    // 64-byte identifiers: a two-digit index followed by 62 padding letters.
+    let group: serde_json::Map<String, Value> = (0..60)
+        .map(|n| {
+            (
+                format!("{n:02}{}", "x".repeat(62)),
+                json!({"type":"integer","minimum":1,"maximum":100}),
+            )
+        })
+        .collect();
+    assert_eq!(group.len(), 60);
+    let properties: serde_json::Map<String, Value> = (0..16)
+        .map(|n| {
+            (
+                format!("group_{n}"),
+                json!({"type":"object","additionalProperties":false,"properties":group}),
+            )
+        })
+        .collect();
+    let schema = json!({"type":"object","additionalProperties":false,"properties":properties});
+    let serialized = serde_json::to_vec(&schema).unwrap().len();
+    assert!(serialized > MAX_UPSTREAM_SCHEMA_BYTES, "{serialized} bytes");
+    let mut document = registry();
+    document["routes"][0]["input_schema"] = schema;
+    assert_eq!(
+        Registry::from_json(&serde_json::to_vec(&document).unwrap()).err(),
+        Some(ContractError::InvalidSchema)
+    );
+    // Version 1 has no separate upstream pin and no admitted-size bound, so the
+    // identical legal schema is admitted: the rejection above is the size check.
+    document["version"] = json!(1);
+    document["routes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("upstream_input_schema");
+    let legacy = Registry::from_json(&serde_json::to_vec(&document).unwrap()).unwrap();
+    assert_eq!(legacy.route_count(), 1);
+    assert_eq!(legacy.routes()[0].prepared_contract_version(), 2);
+}
