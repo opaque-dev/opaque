@@ -19,6 +19,7 @@ fn fixture() -> (tempfile::TempDir, Config, TenantBinding) {
         reviewer_public_key: "ab".repeat(32),
         generation: 7,
         profile: crate::scope_runtime::connector::Profile {
+            ca_certificate_file: None,
             endpoint: "https://trusted.example.invalid/".into(),
             token_file: "/trusted/token".into(),
         },

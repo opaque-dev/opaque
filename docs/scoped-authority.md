@@ -44,6 +44,8 @@ allowed_statuses = ["open", "resolved", "closed"]
 [scope_workflow.profile]
 endpoint = "https://support-api.example.com/v1/"
 token_file = "/var/lib/opaque/support-api.token"
+# Optional: use only these operator-owned PEM trust roots for this connector.
+# ca_certificate_file = "/var/lib/opaque/support-api-ca.pem"
 ```
 
 Use actual principal identifiers from the deployment. The example public key and
@@ -58,6 +60,19 @@ the credential, restart the broker and obtain a fresh human-approved scope. Old
 scopes and action approvals cannot authorize work with the replacement credential,
 even when the endpoint, credential path and case IDs are unchanged. Editing the
 file alone does not change the credential already loaded by a running broker.
+
+For a private HTTPS provider, configure `ca_certificate_file` in the sealed
+profile. The broker loads one to sixteen PEM certificates from an absolute,
+broker-owned mode-0600 regular file of at most 64 KiB, without symbolic or hard
+links. Configured certificates replace built-in public roots for this connector;
+hostname and certificate validation remain required. Omitting the field uses
+the built-in public roots.
+
+The loaded CA file bytes and path are bound into the provider profile. Changing
+the file requires a broker restart and fresh scope approval; old scope/action
+approvals cannot authorize writes under the replacement trust. Editing the file
+alone does not change the running connector. This support is unreleased; local
+TLS fixtures exercise the configured path, not a customer PKI deployment.
 
 ## Provider contract
 

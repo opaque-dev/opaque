@@ -13,6 +13,7 @@ use opaque_core::{
 use std::{
     collections::{BTreeSet, VecDeque},
     os::unix::fs::PermissionsExt,
+    path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -26,7 +27,7 @@ mod qualification;
 
 struct Provider {
     endpoint: String,
-    certificate: Vec<u8>,
+    certificate: String,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     worker: tokio::task::JoinHandle<()>,
@@ -34,7 +35,7 @@ struct Provider {
 impl Provider {
     async fn new(replies: Vec<Vec<u8>>) -> Self {
         let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let der = certificate.cert.der().to_vec();
+        let pem = certificate.cert.pem();
         let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
@@ -113,7 +114,7 @@ impl Provider {
         });
         Self {
             endpoint,
-            certificate: der,
+            certificate: pem,
             requests,
             stop,
             worker,
@@ -152,7 +153,6 @@ struct Fixture {
     context: PrincipalContext,
     key: SigningKey,
     tenant: TenantBinding,
-    certificate: Vec<u8>,
     directory: tempfile::TempDir,
 }
 impl Fixture {
@@ -242,11 +242,15 @@ impl Fixture {
         let token = directory.path().join("provider.token");
         std::fs::write(&token, "fixture-provider-token").unwrap();
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let ca = directory.path().join("provider-ca.pem");
+        std::fs::write(&ca, &provider.certificate).unwrap();
+        std::fs::set_permissions(&ca, std::fs::Permissions::from_mode(0o600)).unwrap();
         let config = Config {
             authority_policy: None,
             profile: connector::Profile {
                 endpoint: provider.endpoint.clone(),
                 token_file: token,
+                ca_certificate_file: Some(ca),
             },
             reviewer_id: reviewer.id.to_string(),
             reviewer_public_key: enrolled.public_key_hex,
@@ -259,17 +263,12 @@ impl Fixture {
         };
         let tenant =
             TenantBinding::new(TenantId::parse("fixture").unwrap(), uuid::Uuid::new_v4()).unwrap();
-        let mut runtime =
-            Runtime::open(config, &tenant, directory.path(), identity, pairing).unwrap();
-        runtime.connector =
-            Connector::new_with_certificate(&runtime.config.profile, &provider.certificate)
-                .unwrap();
+        let runtime = Runtime::open(config, &tenant, directory.path(), identity, pairing).unwrap();
         Self {
             runtime,
             context,
             key,
             tenant,
-            certificate: provider.certificate.clone(),
             directory,
         }
     }
@@ -279,23 +278,18 @@ impl Fixture {
             context,
             key,
             tenant,
-            certificate,
             directory,
         } = self;
         let config = runtime.config.clone();
         let identity = runtime.identity.clone();
         let pairing = runtime.pairing.clone();
         drop(runtime);
-        let mut runtime =
-            Runtime::open(config, &tenant, directory.path(), identity, pairing).unwrap();
-        runtime.connector =
-            Connector::new_with_certificate(&runtime.config.profile, &certificate).unwrap();
+        let runtime = Runtime::open(config, &tenant, directory.path(), identity, pairing).unwrap();
         Self {
             runtime,
             context,
             key,
             tenant,
-            certificate,
             directory,
         }
     }
@@ -809,6 +803,7 @@ fn connector_admits_only_fixed_https_origin_and_private_single_link_credentials(
     let profile = connector::Profile {
         endpoint: "https://support.example.invalid/v1/".into(),
         token_file: token.clone(),
+        ca_certificate_file: None,
     };
     assert!(Connector::new(&profile).is_ok());
     for endpoint in [
@@ -912,6 +907,7 @@ fn provider_profile_changes_when_the_loaded_credential_changes_at_the_same_path(
     let profile = connector::Profile {
         endpoint: "https://support.example.invalid/v1/".into(),
         token_file: token.clone(),
+        ca_certificate_file: None,
     };
     let original = Connector::new(&profile).unwrap().digest;
     assert_eq!(Connector::new(&profile).unwrap().digest, original);
@@ -970,4 +966,214 @@ async fn credential_rotation_at_restart_invalidates_old_scope_and_approved_actio
     let requests = provider.finish().await;
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("GET /cases/case1 "));
+}
+
+#[test]
+fn configured_ca_requires_private_bounded_regular_certificate_custody() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let token = dir.path().join("token");
+    std::fs::write(&token, "synthetic-token").unwrap();
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let ca = dir.path().join("ca.pem");
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+        .unwrap()
+        .cert
+        .pem();
+    std::fs::write(&ca, &certificate).unwrap();
+    std::fs::set_permissions(&ca, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let profile = connector::Profile {
+        endpoint: "https://localhost/".into(),
+        token_file: token,
+        ca_certificate_file: Some(ca.clone()),
+    };
+    let pinned = Connector::new(&profile).unwrap().digest;
+    let public = connector::Profile {
+        ca_certificate_file: None,
+        ..profile.clone()
+    };
+    assert_ne!(Connector::new(&public).unwrap().digest, pinned);
+    assert!(
+        serde_json::to_value(&public)
+            .unwrap()
+            .get("ca_certificate_file")
+            .is_none()
+    );
+    for path in [
+        PathBuf::from("relative"),
+        dir.path().join("missing"),
+        dir.path().to_path_buf(),
+    ] {
+        assert!(
+            Connector::new(&connector::Profile {
+                ca_certificate_file: Some(path),
+                ..profile.clone()
+            })
+            .is_err()
+        );
+    }
+    let link = dir.path().join("link.pem");
+    std::os::unix::fs::symlink(&ca, &link).unwrap();
+    assert!(
+        Connector::new(&connector::Profile {
+            ca_certificate_file: Some(link),
+            ..profile.clone()
+        })
+        .is_err()
+    );
+    let hardlink = dir.path().join("hard.pem");
+    std::fs::hard_link(&ca, &hardlink).unwrap();
+    assert!(Connector::new(&profile).is_err());
+    std::fs::remove_file(hardlink).unwrap();
+    std::fs::set_permissions(&ca, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(Connector::new(&profile).is_err());
+    std::fs::set_permissions(&ca, std::fs::Permissions::from_mode(0o600)).unwrap();
+    for bytes in [
+        vec![],
+        b"not a certificate".to_vec(),
+        vec![b'x'; 65537],
+        certificate.repeat(17).into_bytes(),
+        b"-----BEGIN CERTIFICATE-----\n?\n-----END CERTIFICATE-----".to_vec(),
+    ] {
+        std::fs::write(&ca, bytes).unwrap();
+        assert!(Connector::new(&profile).is_err());
+    }
+    let fifo = dir.path().join("fifo.pem");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: CString is a valid terminated path during mkfifo.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        send.send(
+            Connector::new(&connector::Profile {
+                ca_certificate_file: Some(fifo),
+                ..profile
+            })
+            .is_err(),
+        )
+        .unwrap()
+    });
+    assert!(receive.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
+}
+
+#[tokio::test]
+async fn configured_ca_rotation_requires_fresh_scope_before_any_provider_write() {
+    let provider = Provider::new(vec![read_reply()]).await;
+    let f = Fixture::new(&provider, true);
+    let (scope, issuance) = f.issued(1);
+    let review = f.prepared(&scope, &issuance, "ca-rotation").await;
+    f.approve(&review);
+    let path = f
+        .runtime
+        .config
+        .profile
+        .ca_certificate_file
+        .as_ref()
+        .unwrap();
+    let original = f.runtime.connector.digest.clone();
+    let other = rcgen::generate_simple_self_signed(vec!["other.invalid".into()]).unwrap();
+    std::fs::write(path, other.cert.pem()).unwrap();
+    // The loaded connector remains immutable until an explicit broker restart.
+    assert_eq!(f.runtime.connector.digest, original);
+    assert_ne!(
+        Connector::new(&f.runtime.config.profile).unwrap().digest,
+        original
+    );
+    let f = f.restart();
+    assert_ne!(f.runtime.connector.digest, original);
+    assert!(f.execute(&review, &issuance).await.is_err());
+    assert!(
+        f.runtime
+            .review_action(
+                Prepare {
+                    scope_id: scope.scope_id.clone(),
+                    issuance_round_id: issuance,
+                    resource: "case1".into(),
+                    status: Status::Closed,
+                    request_id: "new-request".into(),
+                },
+                &f.context
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.runtime
+            .ledger
+            .get_scope(&scope.scope_id)
+            .unwrap()
+            .charged_attempts,
+        0
+    );
+    let (fresh, _) = f.issued(1);
+    assert_eq!(fresh.provider_profile_digest, f.runtime.connector.digest);
+    assert_ne!(fresh.provider_profile_digest, scope.provider_profile_digest);
+    let requests = provider.finish().await;
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("GET /cases/case1 "));
+}
+
+#[tokio::test]
+async fn configured_ca_does_not_bypass_certificate_or_hostname_verification() {
+    for mode in ["untrusted", "default-roots", "wrong-hostname"] {
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, "synthetic-token").unwrap();
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let foreign = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(
+            &ca,
+            if mode == "untrusted" {
+                foreign.cert.pem()
+            } else {
+                server.cert.pem()
+            },
+        )
+        .unwrap();
+        std::fs::set_permissions(&ca, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![server.cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(server.signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let observed = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            acceptor.accept(stream).await.is_err()
+        });
+        let host = if mode == "wrong-hostname" {
+            "127.0.0.1"
+        } else {
+            "localhost"
+        };
+        let connector = Connector::new(&connector::Profile {
+            endpoint: format!("https://{host}:{port}/"),
+            token_file: token,
+            ca_certificate_file: if mode == "default-roots" {
+                None
+            } else {
+                Some(ca)
+            },
+        })
+        .unwrap();
+        assert!(connector.read("case1").await.is_err(), "{mode}");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), observed)
+                .await
+                .unwrap()
+                .unwrap(),
+            "{mode}: server unexpectedly completed the TLS handshake"
+        );
+    }
 }

@@ -17,6 +17,9 @@ pub const OPERATION: &str = "support.case.set_status";
 pub struct Profile {
     pub endpoint: String,
     pub token_file: PathBuf,
+    /// Operator-owned PEM roots. When present these replace built-in roots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_certificate_file: Option<PathBuf>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -67,13 +70,6 @@ pub fn hash(value: &impl Serialize) -> Result<String, String> {
 }
 impl Connector {
     pub fn new(profile: &Profile) -> Result<Self, String> {
-        Self::build(profile, None)
-    }
-    #[cfg(test)]
-    pub fn new_with_certificate(profile: &Profile, certificate: &[u8]) -> Result<Self, String> {
-        Self::build(profile, Some(certificate))
-    }
-    fn build(profile: &Profile, certificate: Option<&[u8]>) -> Result<Self, String> {
         let endpoint =
             reqwest::Url::parse(&profile.endpoint).map_err(|_| "invalid support endpoint")?;
         if endpoint.scheme() != "https"
@@ -140,23 +136,67 @@ impl Connector {
             .no_proxy()
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(8));
-        if let Some(certificate) = certificate {
-            builder = builder.add_root_certificate(
-                reqwest::Certificate::from_der(certificate)
-                    .map_err(|_| "invalid support test certificate")?,
-            );
-        }
+        let ca_digest = if let Some(path) = &profile.ca_certificate_file {
+            if !path.is_absolute() {
+                return Err("support CA requires an absolute private path".into());
+            }
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+                .open(path)
+                .map_err(|_| "support CA unavailable")?;
+            let meta = file.metadata().map_err(|_| "support CA unavailable")?;
+            // SAFETY: geteuid has no preconditions.
+            if !meta.is_file()
+                || meta.uid() != unsafe { libc::geteuid() }
+                || meta.mode() & 0o077 != 0
+                || meta.nlink() != 1
+                || meta.len() > 65536
+            {
+                return Err("support CA custody invalid".into());
+            }
+            let mut bytes = Vec::new();
+            file.by_ref()
+                .take(65537)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "support CA unavailable")?;
+            if bytes.len() > 65536 {
+                return Err("support CA exceeds 64 KiB".into());
+            }
+            let certificates = reqwest::Certificate::from_pem_bundle(&bytes)
+                .map_err(|_| "invalid support CA PEM")?;
+            if certificates.is_empty() || certificates.len() > 16 {
+                return Err("support CA requires one to sixteen PEM certificates".into());
+            }
+            builder = builder.tls_built_in_root_certs(false);
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+            Some(<[u8; 32]>::from(Sha256::digest(&bytes)))
+        } else {
+            None
+        };
         let client = builder
             .build()
             .map_err(|_| "support transport unavailable")?;
-        let profile_bytes = serde_json::to_vec(
-            &serde_json::json!({"contract":"opaque.support.case.v1","endpoint":endpoint.as_str(),"credential_slot":profile.token_file}),
-        ).map_err(|_| "encoding failed")?;
+        let mut profile_value = serde_json::json!({"contract":"opaque.support.case.v1","endpoint":endpoint.as_str(),"credential_slot":profile.token_file});
+        if let Some(path) = &profile.ca_certificate_file {
+            profile_value["ca_certificate_slot"] = serde_json::json!(path);
+            profile_value["tls_trust"] = serde_json::json!("configured_pem_only");
+        }
+        let profile_bytes = serde_json::to_vec(&profile_value).map_err(|_| "encoding failed")?;
         let mut profile_hash = Sha256::new();
-        profile_hash.update(b"opaque.support.provider-profile.v2\0");
+        profile_hash.update(if ca_digest.is_some() {
+            b"opaque.support.provider-profile.v3\0"
+        } else {
+            b"opaque.support.provider-profile.v2\0"
+        });
         profile_hash.update((profile_bytes.len() as u64).to_be_bytes());
         profile_hash.update(&profile_bytes);
         profile_hash.update(credential_binding.as_ref());
+        if let Some(digest) = ca_digest {
+            profile_hash.update(digest);
+        }
         let digest = format!("{:x}", profile_hash.finalize());
         Ok(Self {
             client,

@@ -44,7 +44,10 @@ fn migration_preserves_defaults_or_explicit_approval_and_never_copies_local_secr
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     for exact in [None, Some(true), Some(false)] {
-        let content = legacy(exact);
+        let content = format!(
+            "{}ca_certificate_file='/not-read/provider-ca.pem'\n",
+            legacy(exact)
+        );
         std::fs::write(&path, &content).unwrap();
         let result = run(&migrate(path.clone())).unwrap();
         assert_eq!(result["spec"]["approval"]["scope"], "Required");
@@ -60,6 +63,7 @@ fn migration_preserves_defaults_or_explicit_approval_and_never_copies_local_secr
         assert_eq!(result["spec"]["authority"]["maxResources"], 100);
         assert_eq!(result["spec"]["authority"]["maxDuration"], "3600s");
         assert!(!result.to_string().contains("credential"));
+        assert!(!result.to_string().contains("provider-ca"));
         assert!(!result.to_string().contains("trusted.example"));
         assert!(!result.to_string().contains("reviewer_public_key"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
@@ -81,6 +85,7 @@ fn migration_rejects_invalid_ambiguous_or_unsupported_configuration() {
         legacy(None).replace("reviewer_id=", "unsupported="),
         legacy(None).replace("hum_", "agt_"),
         legacy(None).replace("/not-read/credential", "relative"),
+        format!("{}ca_certificate_file='relative.pem'\n", legacy(None)),
         legacy(None).replace(
             "allowed_statuses=['closed']",
             "generation=0\nallowed_statuses=['closed']",
