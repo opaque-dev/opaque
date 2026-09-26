@@ -508,6 +508,7 @@ pub async fn execute_direct(
 /// capability set (bubblewrap, Landlock, seccomp, user namespaces) turned
 /// into a [`linux::SandboxStrategy`]; a host without a namespace wrapper is
 /// refused here, before anything is spawned.
+#[derive(Debug)]
 enum SandboxPlan {
     /// `sandbox = false`: environment sanitization only.
     Direct,
@@ -529,7 +530,15 @@ impl SandboxPlan {
     fn platform_default() -> Result<Self, String> {
         let caps = linux::SandboxCapabilities::detect();
         caps.log_capabilities();
-        linux::SandboxStrategy::select(&caps)
+        Self::from_capabilities(&caps)
+    }
+
+    /// The Linux plan for an already-probed host: the strongest strategy the
+    /// capabilities support, or the refusal that stops the exec before any
+    /// secret is resolved.
+    #[cfg(target_os = "linux")]
+    fn from_capabilities(caps: &linux::SandboxCapabilities) -> Result<Self, String> {
+        linux::SandboxStrategy::select(caps)
             .map(Self::Linux)
             .map_err(|e| format!("linux sandbox unavailable: {e}"))
     }
@@ -671,7 +680,135 @@ mod tests {
                     .any(|e| e.kind == AuditEventKind::SandboxCompleted
                         && e.outcome.as_deref() == Some("failed"))
             );
+            // Both sandbox events name the containment that was used.
+            for kind in [
+                AuditEventKind::SandboxCreated,
+                AuditEventKind::SandboxCompleted,
+            ] {
+                assert!(
+                    audit.events().iter().any(|e| e.kind == kind
+                        && e.detail
+                            .as_deref()
+                            .is_some_and(|detail| detail.contains("sandbox=none"))),
+                    "sandbox audit events must carry sandbox=none for a direct run"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn sandbox_plan_labels_direct_execution_as_none() {
+        let mut profile = test_profile();
+        profile.sandbox = false;
+        let plan = SandboxPlan::for_profile(&profile).unwrap();
+        assert!(matches!(plan, SandboxPlan::Direct));
+        assert_eq!(plan.label(), "none");
+    }
+
+    /// PROPERTY (Linux): with the platform sandbox on, the executor either
+    /// contains the workload under the probed strategy and names it in both
+    /// sandbox audit events, or refuses explicitly with no `sandbox.created`
+    /// event at all. It never reports a sandbox that did not exist.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_executor_names_the_strategy_or_refuses_before_any_sandbox_event() {
+        let directory = tempfile::tempdir().unwrap();
+        let audit = Arc::new(InMemoryAuditEmitter::new());
+        let executor = SandboxExecutor::new(audit.clone(), Vec::new);
+        let mut profile = test_profile();
+        profile.sandbox = true;
+        profile.project_dir = directory.path().into();
+        let request = sandbox_request(
+            serde_json::json!({"profile":profile.name,"command":["/bin/sh","-c","exit 0"]}),
+        );
+        let result = executor
+            .prepare_with_loader(&request, |_| Ok(profile))
+            .unwrap()
+            .execute()
+            .await;
+        let created: Vec<String> = audit
+            .events()
+            .iter()
+            .filter(|e| e.kind == AuditEventKind::SandboxCreated)
+            .filter_map(|e| e.detail.clone())
+            .collect();
+        match linux::SandboxStrategy::select(&linux::SandboxCapabilities::detect()) {
+            Ok(strategy) => {
+                let label = format!("sandbox={}", strategy.name());
+                assert!(created.iter().any(|d| d.contains(&label)), "{created:?}");
+                match result {
+                    Ok(value) => {
+                        assert_eq!(value["exit_code"], 0);
+                        assert!(
+                            audit.events().iter().any(|e| {
+                                e.kind == AuditEventKind::SandboxCompleted
+                                    && e.detail.as_deref().is_some_and(|d| d.contains(&label))
+                            }),
+                            "sandbox.completed must name {label}"
+                        );
+                    }
+                    // The wrapper exists but this host cannot run it (for
+                    // example a container without CAP_SYS_ADMIN).
+                    Err(error) => assert!(
+                        error.contains("linux sandbox failed"),
+                        "unexpected failure shape: {error}"
+                    ),
+                }
+            }
+            Err(_) => {
+                let error = result.expect_err("no wrapper on this host must refuse the exec");
+                assert!(
+                    error.contains("linux sandbox unavailable")
+                        && error.contains("no sandbox strategy available"),
+                    "{error}"
+                );
+                assert!(created.is_empty(), "refused exec must not claim a sandbox");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_plan_follows_the_probed_capabilities() {
+        let caps =
+            |bubblewrap: bool, landlock: bool, user_namespaces: bool| linux::SandboxCapabilities {
+                bubblewrap,
+                bubblewrap_evidence: if bubblewrap {
+                    "ok".into()
+                } else {
+                    "bwrap is not on PATH".into()
+                },
+                landlock,
+                landlock_evidence: "lsm=landlock-listed abi=v7".into(),
+                seccomp: true,
+                user_namespaces,
+                user_namespaces_evidence: if user_namespaces {
+                    "ok".into()
+                } else {
+                    "unshare probe exit status: 1: unshare: unshare failed".into()
+                },
+            };
+        assert_eq!(
+            SandboxPlan::from_capabilities(&caps(true, true, true))
+                .unwrap()
+                .label(),
+            "bubblewrap+landlock+seccomp"
+        );
+        // Landlock missing: explicit failover, named in the label.
+        assert_eq!(
+            SandboxPlan::from_capabilities(&caps(false, false, true))
+                .unwrap()
+                .label(),
+            "unshare+seccomp"
+        );
+        // No namespace wrapper: refused before anything runs.
+        let refusal = SandboxPlan::from_capabilities(&caps(false, true, false)).unwrap_err();
+        assert!(
+            refusal.starts_with("linux sandbox unavailable: ")
+                && refusal.contains("no sandbox strategy available")
+                && refusal.contains("bwrap is not on PATH"),
+            "{refusal}"
+        );
     }
 
     #[cfg(target_os = "macos")]

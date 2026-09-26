@@ -242,21 +242,34 @@ pub struct SandboxCapabilities {
 impl SandboxCapabilities {
     /// Probe the current host for available sandbox mechanisms.
     pub fn detect() -> Self {
-        let probe = LandlockProbe::run();
+        Self::assemble(
+            LandlockProbe::run(),
+            detect_bubblewrap(),
+            detect_seccomp(),
+            detect_user_namespaces(),
+        )
+    }
+
+    /// Turn the individual probe answers into the capability set, logging a
+    /// Landlock probe whose two sources disagree.
+    fn assemble(
+        probe: LandlockProbe,
+        bubblewrap: Result<(), String>,
+        seccomp: bool,
+        user_namespaces: Result<(), String>,
+    ) -> Self {
         if probe.contradictory() {
             warn!(
                 evidence = %probe.evidence(),
                 "landlock: securityfs does not list the LSM but the kernel answers the ABI probe"
             );
         }
-        let bubblewrap = detect_bubblewrap();
-        let user_namespaces = detect_user_namespaces();
         Self {
             bubblewrap: bubblewrap.is_ok(),
             bubblewrap_evidence: evidence_text(&bubblewrap),
             landlock: probe.available(),
             landlock_evidence: probe.evidence(),
-            seccomp: detect_seccomp(),
+            seccomp,
             user_namespaces: user_namespaces.is_ok(),
             user_namespaces_evidence: evidence_text(&user_namespaces),
         }
@@ -306,6 +319,14 @@ const WRAPPER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// Run `program args...` with no input, discarding stdout, and report why it
 /// failed if it did. Output is read after exit; probes print a line at most.
 fn run_wrapper_probe(program: &str, args: &[&str]) -> Result<(), String> {
+    run_wrapper_probe_within(program, args, WRAPPER_PROBE_TIMEOUT)
+}
+
+fn run_wrapper_probe_within(
+    program: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Result<(), String> {
     let mut child = std::process::Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -319,7 +340,7 @@ fn run_wrapper_probe(program: &str, args: &[&str]) -> Result<(), String> {
                 format!("{program} cannot be started: {e}")
             }
         })?;
-    let deadline = std::time::Instant::now() + WRAPPER_PROBE_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -330,8 +351,8 @@ fn run_wrapper_probe(program: &str, args: &[&str]) -> Result<(), String> {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
-                    "{program} probe did not finish within {}s",
-                    WRAPPER_PROBE_TIMEOUT.as_secs()
+                    "{program} probe did not finish within {:.1}s",
+                    timeout.as_secs_f64()
                 ));
             }
             Err(e) => return Err(format!("{program} probe could not be awaited: {e}")),
@@ -757,21 +778,23 @@ impl PreparedRestrictions {
     /// then the seccomp filter. Any failure is an error; a workload that
     /// cannot be restricted never runs.
     pub fn apply(self) -> std::io::Result<()> {
-        use landlock::RulesetCreatedAttr;
+        self.apply_with(&mut KernelRestrictions)
+    }
 
-        // NO_NEW_PRIVS: required for unprivileged seccomp, sound for
+    /// The ordering logic behind [`PreparedRestrictions::apply`], over a
+    /// seam for the three kernel calls so tests can fault-inject each step
+    /// without restricting the test process.
+    fn apply_with(self, kernel: &mut impl RestrictionSyscalls) -> std::io::Result<()> {
+        // NO_NEW_PRIVS first: required for unprivileged seccomp, sound for
         // Landlock, and independently the right property for a sandbox
         // child (no setuid re-escalation).
-        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+        kernel.set_no_new_privs()?;
 
         if let Some(ruleset) = self.landlock {
-            let status = ruleset
-                .no_new_privs(false) // already set above
-                .restrict_self()
+            let status = kernel
+                .restrict_landlock(ruleset)
                 .map_err(|e| std::io::Error::other(format!("landlock restrict: {e}")))?;
-            if matches!(status.ruleset, landlock::RulesetStatus::NotEnforced) {
+            if matches!(status, landlock::RulesetStatus::NotEnforced) {
                 return Err(std::io::Error::other(
                     "landlock restrict returned NOT ENFORCED; refusing to run the workload",
                 ));
@@ -779,11 +802,51 @@ impl PreparedRestrictions {
         }
 
         if let Some(bpf) = &self.seccomp {
-            seccompiler::apply_filter(bpf)
+            kernel
+                .apply_seccomp(bpf)
                 .map_err(|e| std::io::Error::other(format!("seccomp apply: {e}")))?;
         }
 
         Ok(())
+    }
+}
+
+/// The three kernel calls that restrict a process, in the order
+/// [`PreparedRestrictions::apply_with`] issues them.
+trait RestrictionSyscalls {
+    fn set_no_new_privs(&mut self) -> std::io::Result<()>;
+    fn restrict_landlock(
+        &mut self,
+        ruleset: landlock::RulesetCreated,
+    ) -> std::io::Result<landlock::RulesetStatus>;
+    fn apply_seccomp(&mut self, bpf: &seccompiler::BpfProgram) -> std::io::Result<()>;
+}
+
+/// The real kernel.
+struct KernelRestrictions;
+
+impl RestrictionSyscalls for KernelRestrictions {
+    fn set_no_new_privs(&mut self) -> std::io::Result<()> {
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn restrict_landlock(
+        &mut self,
+        ruleset: landlock::RulesetCreated,
+    ) -> std::io::Result<landlock::RulesetStatus> {
+        use landlock::RulesetCreatedAttr;
+        ruleset
+            .no_new_privs(false) // already set by set_no_new_privs
+            .restrict_self()
+            .map(|status| status.ruleset)
+            .map_err(std::io::Error::other)
+    }
+
+    fn apply_seccomp(&mut self, bpf: &seccompiler::BpfProgram) -> std::io::Result<()> {
+        seccompiler::apply_filter(bpf).map_err(std::io::Error::other)
     }
 }
 
@@ -961,7 +1024,14 @@ fn restrict_then_exec(request: HelperRequest) -> Result<std::convert::Infallible
 /// Write the readiness token and close the fd so the workload never inherits
 /// a channel back to the daemon.
 fn signal_ready(fd: libc::c_int) -> std::io::Result<()> {
-    // SAFETY: the daemon dup2'd the pipe onto this exact fd for us to own.
+    // A descriptor nobody handed us must not be adopted: closing it on drop
+    // would trip the IO-safety abort instead of the helper's own exit code.
+    // SAFETY: F_GETFD reads a flag and touches no memory.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor is open and was dup2'd onto this exact number by
+    // the daemon for the helper to own; nothing else in this process uses it.
     let mut pipe = unsafe { std::fs::File::from_raw_fd(fd) };
     pipe.write_all(READY_TOKEN)
 }
@@ -974,8 +1044,11 @@ fn signal_ready(fd: libc::c_int) -> std::io::Result<()> {
 ///
 /// Ends with the `--` separator; the caller appends the target argv.
 pub fn build_bubblewrap_args(config: &LinuxSandboxConfig) -> Vec<String> {
-    let protected = protected_paths();
+    bubblewrap_args_masking(config, &protected_paths())
+}
 
+/// [`build_bubblewrap_args`] with the protected directories given explicitly.
+fn bubblewrap_args_masking(config: &LinuxSandboxConfig, protected: &[PathBuf]) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
     // Read-only root filesystem.
@@ -997,7 +1070,7 @@ pub fn build_bubblewrap_args(config: &LinuxSandboxConfig) -> Vec<String> {
     args.extend_from_slice(&["--bind".into(), proj.clone(), proj]);
 
     // Block protected paths by overlaying them with tmpfs (effectively empty).
-    for protected_path in &protected {
+    for protected_path in protected {
         if protected_path.exists() {
             let p = protected_path.to_string_lossy().into_owned();
             args.extend_from_slice(&["--tmpfs".into(), p]);
@@ -1298,6 +1371,22 @@ pub async fn execute_with_strategy(
         return Err(wrapper_failure(strategy, &mut child, &mut custody).await);
     }
 
+    supervise_workload(child, custody, config.max_output_bytes, deadline, tx).await
+}
+
+/// Everything that happens once the sandbox exists: announce `ExecStarted`,
+/// stream stdout and stderr, wait for the workload under the deadline, and
+/// report `ExecCompleted`. Separate from the wrapper handshake so it can be
+/// exercised with any spawned child; the wrapper is only how the child came
+/// to be confined.
+async fn supervise_workload(
+    mut child: tokio::process::Child,
+    mut custody: super::custody::ProcessCustody,
+    max_bytes: usize,
+    deadline: tokio::time::Instant,
+    tx: mpsc::Sender<ExecFrame>,
+) -> Result<i32, SandboxError> {
+    let pid = child.id().unwrap_or(0);
     super::custody::send_frame(&tx, ExecFrame::ExecStarted { pid }, deadline).await?;
 
     let start = std::time::Instant::now();
@@ -1314,7 +1403,6 @@ pub async fn execute_with_strategy(
 
     let tx_out = tx.clone();
     let tx_err = tx.clone();
-    let max_bytes = config.max_output_bytes;
 
     let stdout_task = tokio::spawn(stream_output(
         stdout,
@@ -1442,6 +1530,8 @@ async fn stream_output(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::future::Future;
+
     use super::*;
 
     fn caps(
@@ -2192,6 +2282,963 @@ mod tests {
                 protected.display()
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Detection evidence, every arm
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn describe_errno_names_every_known_reason() {
+        assert!(describe_errno(libc::EOPNOTSUPP).contains("not enabled at boot"));
+        assert!(describe_errno(libc::ENOSYS).contains("kernel too old or syscall filtered"));
+        assert!(describe_errno(libc::EPERM).contains("denied by a seccomp filter"));
+        assert_eq!(describe_errno(12345), "errno 12345");
+        let filtered = LandlockProbe::from_parts(None, Err(libc::EPERM));
+        assert!(!filtered.available());
+        assert_eq!(
+            filtered.evidence(),
+            "lsm=securityfs-unreadable abi-probe=EPERM (syscall denied by a seccomp filter)"
+        );
+    }
+
+    #[test]
+    fn failed_probes_are_never_contradictory() {
+        for errno in [libc::EOPNOTSUPP, libc::ENOSYS, libc::EPERM] {
+            let listed = LandlockProbe::from_parts(Some("capability,landlock".into()), Err(errno));
+            assert!(!listed.contradictory() && !listed.available());
+            let unlisted = LandlockProbe::from_parts(Some("capability".into()), Err(errno));
+            assert!(!unlisted.contradictory() && !unlisted.available());
+        }
+    }
+
+    #[test]
+    fn assembled_capabilities_carry_every_probe_answer() {
+        let contradictory = LandlockProbe::from_parts(Some("capability,yama".into()), Ok(5));
+        let caps = SandboxCapabilities::assemble(
+            contradictory,
+            Ok(()),
+            true,
+            Err("unshare probe exit status: 1: unshare: unshare failed".into()),
+        );
+        assert!(caps.bubblewrap && caps.landlock && caps.seccomp && !caps.user_namespaces);
+        assert_eq!(caps.bubblewrap_evidence, "ok");
+        assert!(caps.landlock_evidence.contains("securityfs disagrees"));
+        assert!(caps.user_namespaces_evidence.contains("unshare failed"));
+
+        let absent = LandlockProbe::from_parts(None, Err(libc::ENOSYS));
+        let caps = SandboxCapabilities::assemble(
+            absent,
+            Err("bwrap is not on PATH".into()),
+            false,
+            Ok(()),
+        );
+        assert!(!caps.bubblewrap && !caps.landlock && !caps.seccomp && caps.user_namespaces);
+        assert_eq!(caps.user_namespaces_evidence, "ok");
+        assert_eq!(
+            SandboxStrategy::select(&caps).unwrap().name(),
+            "unshare",
+            "a host with only user namespaces still gets namespace isolation"
+        );
+    }
+
+    #[test]
+    fn bubblewrap_masks_protected_directories_that_exist() {
+        let home = tempfile::tempdir().unwrap();
+        let ssh = home.path().join(".ssh");
+        std::fs::create_dir(&ssh).unwrap();
+        let missing = home.path().join(".gnupg");
+        let config = LinuxSandboxConfig {
+            command: vec!["true".into()],
+            env: HashMap::new(),
+            project_dir: PathBuf::from("/tmp/proj"),
+            extra_read_paths: vec![],
+            network_allow: vec![],
+            timeout_secs: 5,
+            max_output_bytes: 1024,
+        };
+        let args = bubblewrap_args_masking(&config, &[ssh.clone(), missing.clone()]);
+        let ssh_arg = ssh.to_string_lossy().into_owned();
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--tmpfs" && w[1] == ssh_arg),
+            "an existing protected dir must be masked: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| *a == missing.to_string_lossy()),
+            "a missing protected dir needs no mask: {args:?}"
+        );
+        // The mask comes after the root bind so it overlays it.
+        let root = args
+            .windows(3)
+            .position(|w| w == ["--ro-bind", "/", "/"])
+            .unwrap();
+        let mask = args.iter().position(|a| *a == ssh_arg).unwrap();
+        assert!(mask > root);
+    }
+
+    // -----------------------------------------------------------------------
+    // A kernel without Landlock, simulated in a child with seccomp
+    // -----------------------------------------------------------------------
+
+    const NO_LANDLOCK_CHILD_ENV: &str = "OPAQUE_SANDBOX_TEST_NO_LANDLOCK_KERNEL";
+    const NO_LANDLOCK_CHILD_TEST: &str = "linux::tests::no_landlock_kernel_child";
+    const SYS_LANDLOCK_ADD_RULE: i64 = 445;
+    const SYS_LANDLOCK_RESTRICT_SELF: i64 = 446;
+
+    /// Child entry: every `landlock_*` syscall answers EOPNOTSUPP, the shape
+    /// of a kernel with the LSM built but not enabled at boot. In the parent
+    /// test run the variable is absent and this is a no-op.
+    #[test]
+    fn no_landlock_kernel_child() {
+        if std::env::var_os(NO_LANDLOCK_CHILD_ENV).is_none() {
+            return;
+        }
+        use seccompiler::{SeccompAction, SeccompFilter, SeccompRule, TargetArch};
+        let mut rules: std::collections::BTreeMap<i64, Vec<SeccompRule>> = Default::default();
+        for nr in [
+            SYS_LANDLOCK_CREATE_RULESET,
+            SYS_LANDLOCK_ADD_RULE,
+            SYS_LANDLOCK_RESTRICT_SELF,
+        ] {
+            rules.insert(nr, vec![]);
+        }
+        let filter = SeccompFilter::new(
+            rules,
+            SeccompAction::Allow,
+            SeccompAction::Errno(libc::EOPNOTSUPP as u32),
+            TargetArch::try_from(std::env::consts::ARCH).unwrap(),
+        )
+        .unwrap();
+        let bpf: seccompiler::BpfProgram = filter.try_into().unwrap();
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+            0
+        );
+        seccompiler::apply_filter(&bpf).unwrap();
+
+        // Detection: the ABI probe fails and says why.
+        let probe = LandlockProbe::run();
+        assert!(!probe.available(), "{}", probe.evidence());
+        assert!(
+            probe.evidence().contains("EOPNOTSUPP"),
+            "{}",
+            probe.evidence()
+        );
+
+        // Building the layer fails closed instead of producing a no-op ruleset.
+        let err = build_landlock_ruleset(Path::new("/tmp"), &[]).unwrap_err();
+        assert!(err.contains("landlock base ABI unavailable"), "{err}");
+        let err =
+            PreparedRestrictions::prepare(true, true, Path::new("/tmp"), &[], true).unwrap_err();
+        assert!(
+            matches!(err, SandboxError::Setup(ref m) if m.contains("landlock requested but unusable")),
+            "{err}"
+        );
+
+        // Failover: the strategy drops the layer and names what is left.
+        let caps = SandboxCapabilities::assemble(probe, Ok(()), true, Ok(()));
+        assert!(!caps.landlock);
+        assert_eq!(
+            SandboxStrategy::select(&caps).unwrap().name(),
+            "bubblewrap+seccomp"
+        );
+
+        // The helper refuses a workload it was told to confine with Landlock.
+        let request = HelperRequest {
+            project_dir: PathBuf::from("/tmp"),
+            extra_read_paths: vec![],
+            network_blocked: true,
+            landlock: true,
+            seccomp: false,
+            ready_fd: None,
+            command: vec!["sh".into(), "-c".into(), "echo must-not-run".into()],
+        };
+        match restrict_then_exec(request) {
+            Err((message, code)) => {
+                assert_eq!(code, HELPER_EXIT_RESTRICT_FAILED);
+                assert!(
+                    message.contains("landlock requested but unusable"),
+                    "{message}"
+                );
+            }
+            Ok(never) => match never {},
+        }
+        println!("no-landlock-kernel-child-ok");
+    }
+
+    #[tokio::test]
+    async fn a_kernel_without_landlock_fails_over_and_the_helper_refuses_landlock_requests() {
+        if !detect_seccomp() {
+            eprintln!("SKIP: seccomp is needed to simulate a kernel without Landlock");
+            return;
+        }
+        let mut cmd = tokio::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            NO_LANDLOCK_CHILD_TEST,
+            "--nocapture",
+            "--test-threads=1",
+        ]);
+        cmd.env(NO_LANDLOCK_CHILD_ENV, "1");
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let output = cmd.output().await.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "child failed:\n{stdout}\n{stderr}");
+        assert!(stdout.contains("no-landlock-kernel-child-ok"), "{stdout}");
+    }
+
+    #[test]
+    fn landlock_ruleset_skips_rule_paths_that_do_not_exist() {
+        if !LandlockProbe::run().available() {
+            eprintln!("SKIP: landlock unavailable on this kernel");
+            return;
+        }
+        // A profile can name directories that are absent on this host; they
+        // simply get no rule. The base grants still apply.
+        let ruleset = build_landlock_ruleset(
+            Path::new("/nonexistent/opaque-project"),
+            &[PathBuf::from("/nonexistent/opaque-extra-read")],
+        );
+        assert!(
+            ruleset.is_ok(),
+            "missing rule paths are skipped, not fatal: {:?}",
+            ruleset.err()
+        );
+    }
+
+    #[test]
+    fn apply_with_no_kernel_layers_still_sets_no_new_privs() {
+        let prepared =
+            PreparedRestrictions::prepare(false, false, Path::new("/tmp"), &[], true).unwrap();
+        assert!(!prepared.landlock_prepared() && !prepared.seccomp_prepared());
+        let mut kernel = FakeKernel::new(None, true);
+        prepared.apply_with(&mut kernel).unwrap();
+        assert_eq!(kernel.steps, vec!["no_new_privs"]);
+    }
+
+    #[test]
+    fn evidence_text_reports_ok_or_the_reason() {
+        assert_eq!(evidence_text(&Ok(())), "ok");
+        assert_eq!(
+            evidence_text(&Err("bwrap is not on PATH".into())),
+            "bwrap is not on PATH"
+        );
+    }
+
+    #[test]
+    fn log_startup_capabilities_reports_the_same_probe_as_detect() {
+        let logged = log_startup_capabilities();
+        let probed = SandboxCapabilities::detect();
+        assert_eq!(logged.bubblewrap, probed.bubblewrap);
+        assert_eq!(logged.landlock, probed.landlock);
+        assert_eq!(logged.seccomp, probed.seccomp);
+        assert_eq!(logged.user_namespaces, probed.user_namespaces);
+        assert_eq!(logged.landlock_evidence, probed.landlock_evidence);
+    }
+
+    #[test]
+    fn sandbox_strategy_fails_over_without_seccomp_and_says_so() {
+        let strategy = SandboxStrategy::select(&caps(true, true, false, true)).unwrap();
+        assert!(!strategy.seccomp && strategy.landlock);
+        assert_eq!(strategy.name(), "bubblewrap+landlock");
+        let unshare = SandboxStrategy::select(&caps(false, true, false, true)).unwrap();
+        assert_eq!(unshare.name(), "unshare+landlock");
+    }
+
+    #[test]
+    fn wrapper_probe_times_out_and_kills_a_stuck_program() {
+        let started = std::time::Instant::now();
+        let err = run_wrapper_probe_within("sleep", &["30"], std::time::Duration::from_millis(200))
+            .unwrap_err();
+        assert!(
+            err.contains("sleep probe did not finish within 0.2s"),
+            "{err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the stuck probe must be killed, not awaited"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper protocol, remaining arms
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn helper_request_rejects_missing_values_and_non_utf8_commands() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let parse = |args: Vec<OsString>| HelperRequest::parse(args);
+        let strs = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+        assert!(
+            parse(strs(&["--project-dir", "/p", "--read"]))
+                .unwrap_err()
+                .contains("--read needs a value")
+        );
+        assert!(
+            parse(strs(&["--project-dir", "/p", "--ready-fd"]))
+                .unwrap_err()
+                .contains("--ready-fd needs a value")
+        );
+        let mut non_utf8 = strs(&["--project-dir", "/p", "--"]);
+        non_utf8.push(OsString::from_vec(vec![0x66, 0xff, 0xfe]));
+        assert!(
+            parse(non_utf8)
+                .unwrap_err()
+                .contains("command arguments must be UTF-8")
+        );
+    }
+
+    #[test]
+    fn maybe_run_helper_returns_when_not_invoked_as_the_helper() {
+        // The test binary is never started with HELPER_ARG as argv[1].
+        maybe_run_helper();
+    }
+
+    // -----------------------------------------------------------------------
+    // Restriction ordering with fault injection (never restricts this process)
+    // -----------------------------------------------------------------------
+
+    /// Records the order of kernel calls and fails at a chosen step.
+    struct FakeKernel {
+        steps: Vec<&'static str>,
+        fail_at: Option<&'static str>,
+        landlock_enforced: bool,
+    }
+
+    impl FakeKernel {
+        fn new(fail_at: Option<&'static str>, landlock_enforced: bool) -> Self {
+            Self {
+                steps: Vec::new(),
+                fail_at,
+                landlock_enforced,
+            }
+        }
+
+        fn step(&mut self, name: &'static str) -> std::io::Result<()> {
+            self.steps.push(name);
+            if self.fail_at == Some(name) {
+                return Err(std::io::Error::other(format!("injected {name} failure")));
+            }
+            Ok(())
+        }
+    }
+
+    impl RestrictionSyscalls for FakeKernel {
+        fn set_no_new_privs(&mut self) -> std::io::Result<()> {
+            self.step("no_new_privs")
+        }
+
+        fn restrict_landlock(
+            &mut self,
+            _ruleset: landlock::RulesetCreated,
+        ) -> std::io::Result<landlock::RulesetStatus> {
+            self.step("landlock")?;
+            Ok(if self.landlock_enforced {
+                landlock::RulesetStatus::FullyEnforced
+            } else {
+                landlock::RulesetStatus::NotEnforced
+            })
+        }
+
+        fn apply_seccomp(&mut self, _bpf: &seccompiler::BpfProgram) -> std::io::Result<()> {
+            self.step("seccomp")
+        }
+    }
+
+    /// The layers this host can build, so the ordering test is meaningful on
+    /// kernels with and without Landlock.
+    fn buildable_restrictions() -> (PreparedRestrictions, bool) {
+        let landlock = LandlockProbe::run().available();
+        let prepared = PreparedRestrictions::prepare(landlock, true, Path::new("/tmp"), &[], true)
+            .expect("layers the probe reported must build");
+        (prepared, landlock)
+    }
+
+    #[test]
+    fn apply_orders_no_new_privs_then_landlock_then_seccomp() {
+        let (prepared, landlock) = buildable_restrictions();
+        let mut kernel = FakeKernel::new(None, true);
+        prepared.apply_with(&mut kernel).expect("all layers apply");
+        let expected: Vec<&str> = if landlock {
+            vec!["no_new_privs", "landlock", "seccomp"]
+        } else {
+            vec!["no_new_privs", "seccomp"]
+        };
+        assert_eq!(kernel.steps, expected);
+    }
+
+    #[test]
+    fn apply_stops_at_a_failing_no_new_privs_before_any_layer() {
+        let (prepared, _) = buildable_restrictions();
+        let mut kernel = FakeKernel::new(Some("no_new_privs"), true);
+        let err = prepared.apply_with(&mut kernel).unwrap_err();
+        assert!(
+            err.to_string().contains("injected no_new_privs failure"),
+            "{err}"
+        );
+        assert_eq!(kernel.steps, vec!["no_new_privs"]);
+    }
+
+    #[test]
+    fn apply_stops_at_a_failing_seccomp_filter() {
+        let (prepared, landlock) = buildable_restrictions();
+        let mut kernel = FakeKernel::new(Some("seccomp"), true);
+        let err = prepared.apply_with(&mut kernel).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("seccomp apply: injected seccomp failure"),
+            "{err}"
+        );
+        assert_eq!(kernel.steps.last(), Some(&"seccomp"));
+        assert_eq!(kernel.steps.len(), if landlock { 3 } else { 2 });
+    }
+
+    #[test]
+    fn apply_refuses_a_landlock_ruleset_the_kernel_did_not_enforce() {
+        if !LandlockProbe::run().available() {
+            eprintln!("SKIP: landlock unavailable, no ruleset to hand the fake kernel");
+            return;
+        }
+        let (prepared, _) = buildable_restrictions();
+        let mut kernel = FakeKernel::new(None, false);
+        let err = prepared.apply_with(&mut kernel).unwrap_err();
+        assert!(err.to_string().contains("NOT ENFORCED"), "{err}");
+        assert_eq!(
+            kernel.steps,
+            vec!["no_new_privs", "landlock"],
+            "seccomp must not be reached"
+        );
+
+        let (prepared, _) = buildable_restrictions();
+        let mut kernel = FakeKernel::new(Some("landlock"), true);
+        let err = prepared.apply_with(&mut kernel).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("landlock restrict: injected landlock failure"),
+            "{err}"
+        );
+        assert_eq!(kernel.steps, vec!["no_new_privs", "landlock"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Readiness pipe and wrapper death, in-process
+    // -----------------------------------------------------------------------
+
+    fn write_then_close(write_end: OwnedFd, chunks: &[&[u8]]) {
+        let mut pipe = std::fs::File::from(write_end);
+        for chunk in chunks {
+            pipe.write_all(chunk).unwrap();
+        }
+    }
+
+    #[test]
+    fn read_ready_accepts_the_token_and_rejects_early_eof() {
+        let (read_end, write_end) = ready_pipe().unwrap();
+        write_then_close(write_end, &[READY_TOKEN]);
+        assert!(read_ready(read_end).unwrap());
+
+        // The token may arrive in pieces.
+        let (read_end, write_end) = ready_pipe().unwrap();
+        write_then_close(write_end, &[b"o", b"k\n"]);
+        assert!(read_ready(read_end).unwrap());
+
+        // A wrapper that dies before the helper writes nothing.
+        let (read_end, write_end) = ready_pipe().unwrap();
+        drop(write_end);
+        assert!(!read_ready(read_end).unwrap());
+
+        // Anything other than the token is not readiness.
+        let (read_end, write_end) = ready_pipe().unwrap();
+        write_then_close(write_end, &[b"no"]);
+        assert!(!read_ready(read_end).unwrap());
+    }
+
+    async fn dying_wrapper(script: &str) -> SandboxError {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.process_group(0).kill_on_drop(true);
+        let mut child = cmd.spawn().expect("spawn sh");
+        let mut custody = super::super::custody::ProcessCustody::new(child.id().unwrap_or(0));
+        let strategy = SandboxStrategy {
+            wrapper: NamespaceWrapper::Bubblewrap,
+            landlock: true,
+            seccomp: true,
+        };
+        wrapper_failure(&strategy, &mut child, &mut custody).await
+    }
+
+    #[tokio::test]
+    async fn wrapper_failure_carries_the_wrappers_status_and_stderr() {
+        let err = dying_wrapper("echo 'bwrap: loopback: Failed to bind' >&2; exit 3").await;
+        let message = err.to_string();
+        assert!(matches!(err, SandboxError::Wrapper(_)), "{message}");
+        assert!(
+            message.contains("bwrap (bubblewrap+landlock+seccomp) exit status: 3: bwrap: loopback: Failed to bind"),
+            "{message}"
+        );
+
+        let silent = dying_wrapper("exit 4").await.to_string();
+        assert!(
+            silent.contains("exit status: 4: no diagnostic output"),
+            "{silent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_strategy_rejects_an_empty_command_before_spawning() {
+        let (tx, _rx) = mpsc::channel(4);
+        let config = LinuxSandboxConfig {
+            command: vec![],
+            env: HashMap::new(),
+            project_dir: PathBuf::from("/tmp"),
+            extra_read_paths: vec![],
+            network_allow: vec![],
+            timeout_secs: 5,
+            max_output_bytes: 1024,
+        };
+        let strategy = SandboxStrategy {
+            wrapper: NamespaceWrapper::Unshare,
+            landlock: false,
+            seccomp: false,
+        };
+        let err = execute_with_strategy(config, &strategy, tx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("empty command"), "{err}");
+    }
+
+    /// PROPERTY: whatever this host allows, a sandboxed `true` is either a
+    /// real exit 0 after `ExecStarted`, or an explicit refusal with no
+    /// `ExecStarted`; never a wrapper exit code dressed up as the workload's.
+    async fn never_a_fake_exit_code(
+        run: impl Future<Output = Result<i32, SandboxError>>,
+        rx: &mut mpsc::Receiver<ExecFrame>,
+    ) {
+        let result = run.await;
+        let mut started = false;
+        while let Ok(frame) = rx.try_recv() {
+            if matches!(frame, ExecFrame::ExecStarted { .. }) {
+                started = true;
+            }
+        }
+        match &result {
+            Ok(code) => assert!(*code == 0 && started, "{result:?} started={started}"),
+            Err(SandboxError::Setup(_) | SandboxError::Wrapper(_) | SandboxError::Spawn(_)) => {
+                assert!(
+                    !started,
+                    "refused runs must not report ExecStarted: {result:?}"
+                );
+            }
+            Err(other) => panic!("unexpected error class: {other}"),
+        }
+        eprintln!(
+            "host outcome: {:?}",
+            result.as_ref().map_err(|e| e.to_string())
+        );
+    }
+
+    fn true_config() -> LinuxSandboxConfig {
+        LinuxSandboxConfig {
+            command: vec!["true".into()],
+            env: HashMap::new(),
+            project_dir: PathBuf::from("/tmp"),
+            extra_read_paths: vec![],
+            network_allow: vec![],
+            timeout_secs: 20,
+            max_output_bytes: 1024,
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_selects_a_strategy_or_refuses_without_spawning() {
+        let (tx, mut rx) = mpsc::channel(16);
+        never_a_fake_exit_code(execute(true_config(), tx), &mut rx).await;
+    }
+
+    #[tokio::test]
+    async fn each_wrapper_either_runs_the_workload_or_fails_explicitly() {
+        let landlock = LandlockProbe::run().available();
+        for wrapper in [NamespaceWrapper::Bubblewrap, NamespaceWrapper::Unshare] {
+            let strategy = SandboxStrategy {
+                wrapper,
+                landlock,
+                seccomp: detect_seccomp(),
+            };
+            let (tx, mut rx) = mpsc::channel(16);
+            never_a_fake_exit_code(execute_with_strategy(true_config(), &strategy, tx), &mut rx)
+                .await;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The helper itself, run as a child of this test binary
+    // -----------------------------------------------------------------------
+
+    /// Environment variable that turns a child copy of this test binary into
+    /// the sandbox helper: the value is the helper argv joined by U+001F.
+    const HELPER_CHILD_ENV: &str = "OPAQUE_SANDBOX_TEST_HELPER_ARGS";
+    const HELPER_CHILD_TEST: &str = "linux::tests::helper_child_entry";
+
+    /// Entry point for the helper child. In the parent test run the variable
+    /// is absent and this is a no-op; in the child it never returns.
+    #[test]
+    fn helper_child_entry() {
+        let Ok(raw) = std::env::var(HELPER_CHILD_ENV) else {
+            return;
+        };
+        let args = raw.split('\u{1f}').map(OsString::from);
+        match HelperRequest::parse(args) {
+            Ok(request) => run_helper(request),
+            Err(error) => {
+                eprintln!("opaque sandbox helper: {error}");
+                std::process::exit(HELPER_EXIT_RESTRICT_FAILED)
+            }
+        }
+    }
+
+    fn helper_child(args: &[String]) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            HELPER_CHILD_TEST,
+            "--nocapture",
+            "--test-threads=1",
+        ]);
+        cmd.env(HELPER_CHILD_ENV, args.join("\u{1f}"));
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
+        cmd
+    }
+
+    fn helper_args(request: &HelperRequest) -> Vec<String> {
+        request
+            .to_args()
+            .into_iter()
+            .skip(1) // HELPER_ARG itself is what maybe_run_helper strips
+            .map(|a| a.into_string().unwrap())
+            .collect()
+    }
+
+    fn host_layers() -> (bool, bool) {
+        (LandlockProbe::run().available(), detect_seccomp())
+    }
+
+    #[tokio::test]
+    async fn helper_restricts_itself_reports_ready_and_execs_the_workload() {
+        let (landlock, seccomp) = host_layers();
+        let project = tempfile::tempdir().unwrap();
+        let request = HelperRequest {
+            project_dir: project.path().to_path_buf(),
+            extra_read_paths: vec![],
+            network_blocked: true,
+            landlock,
+            seccomp,
+            ready_fd: Some(READY_FD),
+            command: vec!["sh".into(), "-c".into(), "echo helper-child-ok".into()],
+        };
+        let mut cmd = helper_child(&helper_args(&request));
+        let (ready_rx, ready_tx) = ready_pipe().unwrap();
+        inherit_ready_fd(&mut cmd, ready_tx.as_raw_fd());
+        let child = cmd.spawn().expect("spawn helper child");
+        drop(ready_tx);
+        let ready = tokio::task::spawn_blocking(move || read_ready(ready_rx));
+        let output = child.wait_with_output().await.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            ready.await.unwrap().unwrap(),
+            "helper must report readiness before exec (stderr: {stderr})"
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "stdout={stdout} stderr={stderr}"
+        );
+        assert!(
+            stdout.contains("helper-child-ok"),
+            "stdout={stdout} stderr={stderr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn helper_exit_codes_distinguish_restrict_ready_exec_and_not_found_failures() {
+        let (landlock, seccomp) = host_layers();
+        let base = HelperRequest {
+            project_dir: PathBuf::from("/tmp"),
+            extra_read_paths: vec![],
+            network_blocked: true,
+            landlock,
+            seccomp,
+            ready_fd: None,
+            command: vec!["true".into()],
+        };
+
+        // Missing program: the shell's 127.
+        let not_found = HelperRequest {
+            command: vec!["/nonexistent/opaque-helper-workload".into()],
+            ..base.clone()
+        };
+        let output = helper_child(&helper_args(&not_found))
+            .output()
+            .await
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(HELPER_EXIT_NOT_FOUND),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("cannot exec /nonexistent/opaque-helper-workload"),
+            "{stderr}"
+        );
+
+        // A program that exists but cannot be executed: the shell's 126.
+        let not_executable = HelperRequest {
+            command: vec!["/".into()],
+            ..base.clone()
+        };
+        let output = helper_child(&helper_args(&not_executable))
+            .output()
+            .await
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(HELPER_EXIT_CANNOT_EXEC),
+            "{stderr}"
+        );
+
+        // Readiness cannot be reported: restricted but the workload never runs.
+        let bad_ready_fd = HelperRequest {
+            ready_fd: Some(999),
+            command: vec!["sh".into(), "-c".into(), "echo must-not-run".into()],
+            ..base.clone()
+        };
+        let output = helper_child(&helper_args(&bad_ready_fd))
+            .output()
+            .await
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(HELPER_EXIT_RESTRICT_FAILED),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("cannot report readiness on fd 999"),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("must-not-run"), "{stdout}");
+
+        // Malformed helper argv never reaches the workload either.
+        let mut malformed = helper_args(&base);
+        malformed.insert(0, "--bogus".into());
+        let output = helper_child(&malformed).output().await.unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(HELPER_EXIT_RESTRICT_FAILED),
+            "{stderr}"
+        );
+        assert!(stderr.contains("unexpected helper argument"), "{stderr}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Supervision of an established workload, with plain children
+    // -----------------------------------------------------------------------
+
+    fn spawn_plain(script: &str) -> (tokio::process::Child, super::super::custody::ProcessCustody) {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.process_group(0).kill_on_drop(true);
+        let child = cmd.spawn().expect("spawn sh");
+        let custody = super::super::custody::ProcessCustody::new(child.id().unwrap_or(0));
+        (child, custody)
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<ExecFrame>) -> (bool, String, String, Option<i32>) {
+        let (mut started, mut out, mut err, mut completed) =
+            (false, String::new(), String::new(), None);
+        while let Ok(frame) = rx.try_recv() {
+            match frame {
+                ExecFrame::ExecStarted { .. } => started = true,
+                ExecFrame::Output {
+                    stream: ExecStream::Stdout,
+                    data,
+                } => out.push_str(&data),
+                ExecFrame::Output {
+                    stream: ExecStream::Stderr,
+                    data,
+                } => err.push_str(&data),
+                ExecFrame::ExecCompleted { exit_code, .. } => completed = Some(exit_code),
+            }
+        }
+        (started, out, err, completed)
+    }
+
+    #[tokio::test]
+    async fn supervise_streams_output_and_reports_the_workloads_exit_code() {
+        let (child, custody) = spawn_plain("echo out-line; echo err-line >&2; exit 3");
+        let (tx, mut rx) = mpsc::channel(64);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        let code = supervise_workload(child, custody, 1 << 16, deadline, tx)
+            .await
+            .unwrap();
+        assert_eq!(code, 3);
+        let (started, out, err, completed) = drain(&mut rx);
+        assert!(started);
+        assert!(out.contains("out-line"), "{out:?}");
+        assert!(err.contains("err-line"), "{err:?}");
+        assert_eq!(completed, Some(3));
+    }
+
+    #[tokio::test]
+    async fn supervise_kills_a_workload_that_outlives_the_deadline() {
+        let (child, custody) = spawn_plain("sleep 30");
+        let (tx, mut rx) = mpsc::channel(64);
+        let started_at = std::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+        let code = supervise_workload(child, custody, 1024, deadline, tx)
+            .await
+            .unwrap();
+        assert_eq!(code, -1);
+        assert!(
+            started_at.elapsed() < std::time::Duration::from_secs(10),
+            "the workload must be killed at the deadline, not awaited"
+        );
+        let (started, _, _, completed) = drain(&mut rx);
+        assert!(started);
+        assert_eq!(completed, Some(-1));
+    }
+
+    #[tokio::test]
+    async fn supervise_reports_minus_one_when_an_escaped_descendant_holds_the_pipes() {
+        if run_wrapper_probe("setsid", &["true"]).is_err() {
+            eprintln!("SKIP: setsid unavailable, cannot stage a descendant outside the group");
+            return;
+        }
+        // A setsid'd grandchild keeps the output pipes open past the deadline
+        // from outside the process group that custody can kill, so completion
+        // is bounded by the deadline. The leader exits 0 only after the
+        // grandchild has proven (by touching the marker) that it already left
+        // the group; otherwise the group kill could still catch it.
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("escaped");
+        let script = format!(
+            "setsid sh -c 'touch {m}; sleep 3' & while [ ! -e {m} ]; do sleep 0.01; done; exit 0",
+            m = marker.display()
+        );
+        let (child, custody) = spawn_plain(&script);
+        let (tx, mut rx) = mpsc::channel(64);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+        let code = supervise_workload(child, custody, 1024, deadline, tx)
+            .await
+            .unwrap();
+        assert_eq!(code, -1);
+        let (started, _, _, completed) = drain(&mut rx);
+        assert!(started);
+        assert_eq!(completed, Some(-1));
+    }
+
+    #[tokio::test]
+    async fn supervise_stops_when_the_consumer_disconnects() {
+        let (child, custody) = spawn_plain("sleep 30");
+        let (tx, mut rx) = mpsc::channel(64);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        let supervision = tokio::spawn(supervise_workload(child, custody, 1024, deadline, tx));
+        // Wait for ExecStarted, then walk away.
+        let first = rx.recv().await;
+        assert!(matches!(first, Some(ExecFrame::ExecStarted { .. })));
+        drop(rx);
+        let err = supervision.await.unwrap().unwrap_err();
+        assert!(
+            matches!(err, SandboxError::Io(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn supervise_reports_a_signal_killed_workload_as_minus_one() {
+        let (child, custody) = spawn_plain("kill -9 $$");
+        let (tx, mut rx) = mpsc::channel(64);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        let code = supervise_workload(child, custody, 1024, deadline, tx)
+            .await
+            .unwrap();
+        assert_eq!(code, -1, "no exit code is reported as -1, never as success");
+        let (started, _, _, completed) = drain(&mut rx);
+        assert!(started);
+        assert_eq!(completed, Some(-1));
+    }
+
+    #[tokio::test]
+    async fn wrapper_failure_copes_without_a_stderr_pipe_and_with_an_already_reaped_child() {
+        let strategy = SandboxStrategy {
+            wrapper: NamespaceWrapper::Unshare,
+            landlock: false,
+            seccomp: true,
+        };
+
+        // No stderr pipe at all: still an explicit wrapper error.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exit 2"]);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.process_group(0).kill_on_drop(true);
+        let mut child = cmd.spawn().unwrap();
+        let mut custody = super::super::custody::ProcessCustody::new(child.id().unwrap_or(0));
+        let message = wrapper_failure(&strategy, &mut child, &mut custody)
+            .await
+            .to_string();
+        assert!(
+            message.contains("unshare (unshare+seccomp) exit status: 2: no diagnostic output"),
+            "{message}"
+        );
+
+        // Already reaped before the failure is described: the status is
+        // unknown, the error is still explicit.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exit 0"]);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.process_group(0).kill_on_drop(true);
+        let mut child = cmd.spawn().unwrap();
+        let mut custody = super::super::custody::ProcessCustody::new(child.id().unwrap_or(0));
+        child.wait().await.unwrap();
+        let message = wrapper_failure(&strategy, &mut child, &mut custody)
+            .await
+            .to_string();
+        assert!(message.contains("unknown status ("), "{message}");
+    }
+
+    #[test]
+    fn wrapper_probe_distinguishes_unstartable_programs_and_silent_failures() {
+        let unstartable = run_wrapper_probe("/etc/hostname", &["--", "true"]).unwrap_err();
+        assert!(
+            unstartable.contains("/etc/hostname cannot be started"),
+            "{unstartable}"
+        );
+        let silent = run_wrapper_probe("sh", &["-c", "exit 5"]).unwrap_err();
+        assert!(
+            silent.contains("sh probe exit status: 5: no diagnostic output"),
+            "{silent}"
+        );
     }
 }
 
