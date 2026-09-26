@@ -14,6 +14,143 @@ fn path(path: &Path) -> &str {
 }
 
 #[test]
+fn scope_cli_exports_stopped_state_and_rejects_live_writer_without_mutation() {
+    use opaque_bounded_work::scope_store::ScopeStore;
+    use opaque_core::{evidence_checkpoint as wire, scope::AuthorityOwner};
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = directory.path();
+    let owner = AuthorityOwner {
+        tenant_id: "tenant".into(),
+        broker_id: "broker".into(),
+        generation: "one".into(),
+    };
+    let key = root.join("producer.key");
+    let public = root.join("public.json");
+    assert!(
+        run(&[
+            "keygen",
+            "--private-key",
+            path(&key),
+            "--public-key",
+            path(&public)
+        ])
+        .status
+        .success()
+    );
+    let public: Value = serde_json::from_slice(&std::fs::read(public).unwrap()).unwrap();
+    let enrollment = root.join("enrollment.json");
+    let trust = wire::ProducerTrust {
+        schema_version: 1,
+        scope: wire::Scope {
+            tenant_id: "tenant".into(),
+            broker_id: "broker".into(),
+            generation: "one".into(),
+            stream_id: "scope-ledger".into(),
+        },
+        key_id: public["key_id"].as_str().unwrap().into(),
+        public_key: public["public_key"].as_str().unwrap().into(),
+    };
+    std::fs::write(&enrollment, wire::canonical(&trust).unwrap()).unwrap();
+    let database = root.join("scopes.db");
+    let store = ScopeStore::open(&database, owner).unwrap();
+    let output = root.join("snapshot");
+    let args = [
+        "create-scope",
+        "--database",
+        path(&database),
+        "--private-key",
+        path(&key),
+        "--enrollment",
+        path(&enrollment),
+        "--build-identity",
+        "synthetic-test",
+        "--output",
+        path(&output),
+    ];
+    assert!(!run(&args).status.success());
+    assert!(!output.exists());
+    drop(store);
+    let before = std::fs::read(&database).unwrap();
+    let created = run(&args);
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    let result: Value = serde_json::from_slice(&created.stdout).unwrap();
+    assert_eq!(result["evidence_format"], "scope_ledger_v1");
+    assert_eq!(result["approval_signatures"], "not_included");
+    let checkpoint = output.join("checkpoint.json");
+    let export = output.join("scope.json");
+    let verify = [
+        "verify",
+        "--enrollment",
+        path(&enrollment),
+        "--checkpoint",
+        path(&checkpoint),
+        "--export",
+        path(&export),
+        "--expected-checkpoint-sha256",
+        result["checkpoint_sha256"].as_str().unwrap(),
+    ];
+    let verified = run(&verify);
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let summary: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(summary["evidence_format"], "scope_ledger_v1");
+    let next = root.join("next");
+    let continued = run(&[
+        "create-scope",
+        "--database",
+        path(&database),
+        "--private-key",
+        path(&key),
+        "--enrollment",
+        path(&enrollment),
+        "--build-identity",
+        "synthetic-test",
+        "--output",
+        path(&next),
+        "--previous",
+        path(&checkpoint),
+        "--previous-export",
+        path(&export),
+    ]);
+    assert!(
+        continued.status.success(),
+        "{}",
+        String::from_utf8_lossy(&continued.stderr)
+    );
+    assert!(
+        !run(&[
+            "create-scope",
+            "--database",
+            path(&database),
+            "--private-key",
+            path(&key),
+            "--enrollment",
+            path(&enrollment),
+            "--build-identity",
+            "synthetic-test",
+            "--output",
+            path(&root.join("invalid")),
+            "--previous",
+            path(&checkpoint)
+        ])
+        .status
+        .success()
+    );
+    std::fs::write(&export, b"{}").unwrap();
+    assert!(!run(&verify).status.success());
+}
+
+#[test]
 fn key_enrollment_snapshot_verify_and_retention_request_roundtrip() {
     let directory = tempfile::tempdir().unwrap();
     let key = directory.path().join("evidence.key");

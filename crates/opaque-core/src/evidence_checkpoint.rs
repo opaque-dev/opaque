@@ -9,6 +9,9 @@ use std::path::Path;
 
 pub const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+/// Checkpoint v1 signs audit JSONL; v2 signs a complete ScopeEvidence JSON
+/// document. The version is signed and selects a distinct signature domain.
+pub const SCOPE_CHECKPOINT_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 #[error("evidence validation failed: {0}")]
@@ -218,7 +221,7 @@ fn validate_checkpoint(payload: &Checkpoint) -> Result<(), EvidenceError> {
     if let Some(previous) = &payload.previous_checkpoint_sha256 {
         unhex::<32>(previous)?;
     }
-    if payload.schema_version != 1
+    if !matches!(payload.schema_version, 1 | SCOPE_CHECKPOINT_VERSION)
         || !label(&payload.build_identity)
         || (payload.checkpoint_sequence == 1) != payload.previous_checkpoint_sha256.is_none()
         || payload.checkpoint_sequence == 0
@@ -268,6 +271,32 @@ pub fn checkpoint_digest(checkpoint: &SignedCheckpoint) -> Result<String, Eviden
     Ok(sha256(&canonical(checkpoint)?))
 }
 
+fn checkpoint_domain(version: u32) -> &'static [u8] {
+    if version == SCOPE_CHECKPOINT_VERSION {
+        b"opaque.evidence.scope-checkpoint.v2\0"
+    } else {
+        b"opaque.evidence.checkpoint.v1\0"
+    }
+}
+
+fn scope_summary(
+    evidence: &crate::scope_evidence::ScopeEvidence,
+    trust: &ProducerTrust,
+) -> Result<crate::audit::checkpoint::ExportSummary, EvidenceError> {
+    if evidence.owner.tenant_id != trust.scope.tenant_id
+        || evidence.owner.broker_id != trust.scope.broker_id
+        || evidence.owner.generation != trust.scope.generation
+    {
+        return Err(EvidenceError("scope export owner differs from enrollment"));
+    }
+    Ok(crate::audit::checkpoint::ExportSummary {
+        first_sequence: evidence.events.first().map(|event| event.sequence),
+        last_sequence: evidence.events.last().map(|event| event.sequence),
+        record_count: evidence.events.len() as u64,
+        gaps: vec![],
+    })
+}
+
 /// Authenticate the enrolled producer and exact export bytes. The caller owns
 /// enrollment provenance and comparison with previously retained checkpoints.
 pub fn verify_checkpoint(
@@ -285,11 +314,21 @@ pub fn verify_checkpoint(
     }
     let signature = Signature::from_bytes(&unhex(&checkpoint.signature)?);
     key.verify_strict(
-        &message(b"opaque.evidence.checkpoint.v1\0", &checkpoint.payload)?,
+        &message(
+            checkpoint_domain(checkpoint.payload.schema_version),
+            &checkpoint.payload,
+        )?,
         &signature,
     )
     .map_err(|_| EvidenceError("checkpoint signature mismatch"))?;
-    let summary = crate::audit::checkpoint::inspect_export(export)?;
+    let summary = if checkpoint.payload.schema_version == SCOPE_CHECKPOINT_VERSION {
+        scope_summary(
+            &crate::scope_evidence::ScopeEvidence::decode(export)?,
+            trust,
+        )?
+    } else {
+        crate::audit::checkpoint::inspect_export(export)?
+    };
     if summary.first_sequence != checkpoint.payload.first_sequence
         || summary.last_sequence != checkpoint.payload.last_sequence
         || summary.record_count != checkpoint.payload.record_count
@@ -319,7 +358,10 @@ pub fn create_checkpoint(
     let snapshot = crate::audit::checkpoint::verified_snapshot(db_path)?;
     let sequence = if let Some(previous) = previous {
         validate_checkpoint(&previous.payload)?;
-        if previous.payload.scope != trust.scope || previous.payload.key_id != trust.key_id {
+        if previous.payload.schema_version != 1
+            || previous.payload.scope != trust.scope
+            || previous.payload.key_id != trust.key_id
+        {
             return Err(EvidenceError(
                 "previous checkpoint scope or key changed; enroll a new generation",
             ));
@@ -366,6 +408,64 @@ pub fn create_checkpoint(
         .sign(&message(b"opaque.evidence.checkpoint.v1\0", &payload)?)
         .to_bytes());
     Ok((SignedCheckpoint { payload, signature }, snapshot.bytes))
+}
+
+/// Sign a complete, structurally verified scope snapshot obtained by the trusted
+/// producer from its ledger. Verification checks accounting/history, not whether
+/// the producer is honest or the snapshot is its latest state. Continuing a
+/// stream requires the previous exact export as well as its signed checkpoint.
+pub fn create_scope_checkpoint(
+    evidence: &crate::scope_evidence::ScopeEvidence,
+    trust: &ProducerTrust,
+    signing_key: &SigningKey,
+    previous: Option<(&SignedCheckpoint, &[u8])>,
+    build_identity: String,
+) -> Result<(SignedCheckpoint, Vec<u8>), EvidenceError> {
+    if trust.verifying_key()? != signing_key.verifying_key() {
+        return Err(EvidenceError("signing key does not match enrollment"));
+    }
+    let export = evidence.encode()?;
+    let summary = scope_summary(evidence, trust)?;
+    let sequence = if let Some((checkpoint, prior_bytes)) = previous {
+        if checkpoint.payload.schema_version != SCOPE_CHECKPOINT_VERSION {
+            return Err(EvidenceError(
+                "checkpoint format changed; enroll a new stream",
+            ));
+        }
+        verify_checkpoint(checkpoint, trust, prior_bytes)?;
+        evidence.validate_extension(&crate::scope_evidence::ScopeEvidence::decode(prior_bytes)?)?;
+        checkpoint
+            .payload
+            .checkpoint_sequence
+            .checked_add(1)
+            .ok_or(EvidenceError("checkpoint sequence exhausted"))?
+    } else {
+        1
+    };
+    let payload = Checkpoint {
+        schema_version: SCOPE_CHECKPOINT_VERSION,
+        scope: trust.scope.clone(),
+        key_id: trust.key_id.clone(),
+        checkpoint_sequence: sequence,
+        first_sequence: summary.first_sequence,
+        last_sequence: summary.last_sequence,
+        record_count: summary.record_count,
+        export_sha256: sha256(&export),
+        previous_checkpoint_sha256: previous
+            .map(|(checkpoint, _)| checkpoint_digest(checkpoint))
+            .transpose()?,
+        build_identity,
+        coverage_start: summary.first_sequence,
+        gaps: summary.gaps,
+    };
+    validate_checkpoint(&payload)?;
+    let signature = hex(&signing_key
+        .sign(&message(
+            checkpoint_domain(payload.schema_version),
+            &payload,
+        )?)
+        .to_bytes());
+    Ok((SignedCheckpoint { payload, signature }, export))
 }
 
 pub fn retention_request(checkpoint: &SignedCheckpoint) -> Result<RetentionRequest, EvidenceError> {

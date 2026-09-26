@@ -140,6 +140,7 @@ use this authenticated RPC and do not open the broker database.
 The first runtime supports one owner, one reviewer, one fixed connector and root
 grants with no child delegation. The underlying library supports narrowing and
 shared ancestor budgets, but those delegation routes are not exposed here. There
-is no cross-broker budget, failover, quorum, automatic retry, or complete portable
-audit export for this workflow. Keep existing credential custody supported;
+is no cross-broker budget, failover, quorum, or automatic retry. A
+[complete retained ledger export](scope-evidence.md) supports offline accounting
+verification; signed review receipts must still be retained separately. Keep existing credential custody supported;
 new developer password-broker expansion remains deferred.
