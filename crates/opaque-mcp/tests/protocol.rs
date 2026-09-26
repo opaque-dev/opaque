@@ -427,6 +427,67 @@ async fn malformed_tool_calls_return_errors_and_the_real_process_keeps_serving()
 }
 
 #[tokio::test]
+async fn schema_validation_errors_name_the_missing_field_over_stdio() {
+    // The first-session mistake from the quickstart: a required field omitted.
+    // No daemon exists; validation happens before any IPC.
+    let directory = tempfile::tempdir().unwrap();
+    let mut server = Server::start(directory.path());
+    server
+        .send(json!({"jsonrpc":"2.0","id":"init","method":"initialize"}))
+        .await;
+    assert_eq!(
+        server.receive().await["result"]["serverInfo"]["name"],
+        "opaque-mcp"
+    );
+    let secret = "synthetic-private-value-4e1d";
+    for (id, tool, arguments, expected) in [
+        (
+            "empty",
+            "opaque_secrets_status",
+            json!({}),
+            "missing required field \"/profile\"",
+        ),
+        (
+            "wrong-type",
+            "opaque_task_run",
+            json!({"task_id":null}),
+            "\"/task_id\" must be of type string",
+        ),
+        (
+            "extra-field",
+            "opaque_task_list",
+            json!({"unexpected":secret}),
+            "\"/\" has 1 unexpected field; allowed fields: cursor",
+        ),
+        (
+            "two-failures",
+            "opaque_sandbox_exec",
+            json!({"command":secret}),
+            "missing required field \"/profile\"; \"/command\" must be of type array",
+        ),
+    ] {
+        server
+            .send(
+                json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{
+                "name":tool,"arguments":arguments}}),
+            )
+            .await;
+        let response = server.receive().await;
+        assert_eq!(
+            response,
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,
+                "message":format!("tool arguments do not match the input schema: {expected}")}}),
+        );
+        assert!(!response.to_string().contains(secret));
+    }
+    server
+        .send(json!({"jsonrpc":"2.0","id":"alive","method":"ping"}))
+        .await;
+    assert_eq!(server.receive().await["result"], json!({}));
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn full_tool_capacity_keeps_control_responsive_and_cancellation_closes_ipc() {
     let (directory, listener) = daemon_fixture();
     let mut server = Server::start(directory.path());
@@ -604,4 +665,165 @@ async fn batch_client_closing_stdin_still_receives_every_response() {
             .unwrap()
             .success()
     );
+}
+
+/// Answer one authenticated `mcp_catalog` exchange per reply, in order, then
+/// refuse any further connection: discovery never retries.
+fn scripted_catalog_daemon(
+    listener: UnixListener,
+    replies: Vec<Value>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        for reply in replies {
+            let (stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+            let handshake: Value =
+                serde_json::from_slice(&framed.next().await.unwrap().unwrap()).unwrap();
+            assert_eq!(
+                handshake,
+                json!({"handshake":"v1","daemon_token":"test-token"})
+            );
+            let request: Value =
+                serde_json::from_slice(&framed.next().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request, json!({"id":1,"method":"mcp_catalog","params":{}}));
+            framed
+                .send(
+                    serde_json::to_vec(&json!({"id":1,"result":reply}))
+                        .unwrap()
+                        .into(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), framed.next())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    })
+}
+
+fn tool_names(listed: &Value) -> Vec<&str> {
+    listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect()
+}
+
+const INVOCATION_TOOLS: [&str; 2] = ["opaque_mcp_invocation_get", "opaque_mcp_invocation_revoke"];
+
+#[tokio::test]
+async fn tools_list_never_advertises_invocation_tools_the_daemon_does_not_serve() {
+    let (directory, listener) = daemon_fixture();
+    let mut server = Server::start(directory.path());
+    // A daemon through 0.5.0 answers without availability; a current daemon
+    // without an `[mcp]` section says `disabled`; an unrecognized value is
+    // treated as not served.
+    let daemon = scripted_catalog_daemon(
+        listener,
+        vec![
+            json!({"tools":[]}),
+            json!({"tools":[],"gateway":{"availability":"disabled"}}),
+            json!({"tools":[],"gateway":{"availability":"unrecognized"}}),
+        ],
+    );
+    for id in [
+        "legacy-daemon",
+        "disabled-gateway",
+        "unrecognized-availability",
+    ] {
+        server
+            .send(json!({"jsonrpc":"2.0","id":id,"method":"tools/list","params":{}}))
+            .await;
+        let listed = server.receive().await;
+        assert_eq!(listed["id"], id);
+        assert!(listed.get("error").is_none());
+        let names = tool_names(&listed);
+        assert_eq!(names.len(), 22, "{id}: {names:?}");
+        assert!(names.contains(&"opaque_secrets_status"));
+        assert!(
+            names.iter().all(|name| !name.starts_with("opaque_mcp_")),
+            "{id}: {names:?}"
+        );
+        for tool in INVOCATION_TOOLS {
+            assert!(!names.contains(&tool), "{id} advertised {tool}");
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(5), daemon)
+        .await
+        .unwrap()
+        .unwrap();
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn tools_list_advertises_invocation_tools_only_when_the_daemon_serves_its_gateway() {
+    let (directory, listener) = daemon_fixture();
+    let mut server = Server::start(directory.path());
+    let enrolled = json!({
+        "name":"opaque_mcp_tool_fixture_note",
+        "description":"Enrolled fixture tool",
+        "inputSchema":{"type":"object","additionalProperties":false}
+    });
+    let daemon = scripted_catalog_daemon(
+        listener,
+        vec![
+            // Policy may hide every route while owned receipts stay readable.
+            json!({"tools":[],"gateway":{"availability":"fixture_only"}}),
+            json!({"tools":[enrolled],"gateway":{"availability":"enabled"}}),
+        ],
+    );
+    let mut invocation_definitions = Vec::new();
+    for (id, expected) in [
+        ("fixture-gateway", 22 + INVOCATION_TOOLS.len()),
+        ("enabled-gateway", 23 + INVOCATION_TOOLS.len()),
+    ] {
+        server
+            .send(json!({"jsonrpc":"2.0","id":id,"method":"tools/list","params":{}}))
+            .await;
+        let listed = server.receive().await;
+        assert_eq!(listed["id"], id);
+        let names = tool_names(&listed);
+        assert_eq!(names.len(), expected, "{id}: {names:?}");
+        for tool in INVOCATION_TOOLS {
+            assert!(names.contains(&tool), "{id} omitted {tool}");
+        }
+        assert_eq!(
+            names.contains(&"opaque_mcp_tool_fixture_note"),
+            id == "enabled-gateway"
+        );
+        let definitions: Vec<Value> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tool| INVOCATION_TOOLS.contains(&tool["name"].as_str().unwrap()))
+            .cloned()
+            .collect();
+        for definition in &definitions {
+            assert_eq!(
+                definition["inputSchema"],
+                json!({"type":"object","additionalProperties":false,"required":["invocation_id"],"properties":{"invocation_id":{"type":"string","minLength":36,"maxLength":36}}})
+            );
+        }
+        invocation_definitions.push(definitions);
+    }
+    // The adapter owns the invocation tool contract; the daemon only says
+    // whether it is served.
+    assert_eq!(invocation_definitions[0], invocation_definitions[1]);
+    tokio::time::timeout(Duration::from_secs(5), daemon)
+        .await
+        .unwrap()
+        .unwrap();
+    server.stop().await;
 }

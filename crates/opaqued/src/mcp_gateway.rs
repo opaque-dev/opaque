@@ -113,7 +113,11 @@ async fn inner(
 ) -> Result<serde_json::Value, String> {
     let Some(gateway) = &state.mcp else {
         if req.method == "mcp_catalog" {
-            return Ok(serde_json::json!({"tools":[]}));
+            // Discovery states that no invocation method is served, so the
+            // adapter advertises no invocation tools.
+            return Ok(serde_json::json!({
+                "tools": [], "gateway": {"availability": "disabled"},
+            }));
         }
         return Err("disabled".into());
     };
@@ -145,6 +149,10 @@ async fn inner(
                 state.enclave.mcp_route_allowed(&request)
             });
         }
+        // Policy can hide every route from this caller while `mcp_get` and
+        // `mcp_revoke` still serve receipts it owns, so availability is
+        // reported separately from the visible route list.
+        catalog["gateway"] = serde_json::json!({"availability": availability(gateway)});
         return Ok(catalog);
     }
     if matches!(req.method.as_str(), "mcp_get" | "mcp_revoke") {
@@ -200,6 +208,15 @@ async fn inner(
     serde_json::to_value(result).map_err(|_| "MCP result encoding failed".into())
 }
 
+/// Shared vocabulary for the `operations` inventory and `mcp_catalog` discovery.
+fn availability(gateway: &Gateway) -> &'static str {
+    if gateway.fixture_only() {
+        "fixture_only"
+    } else {
+        "enabled"
+    }
+}
+
 /// Configured dedicated runner availability; the raw generic execute route
 /// deliberately has no MCP handler and cannot bypass invocation accounting.
 pub fn operation_catalog(state: &DaemonState) -> Vec<serde_json::Value> {
@@ -207,11 +224,7 @@ pub fn operation_catalog(state: &DaemonState) -> Vec<serde_json::Value> {
     if let Some(entry) = catalog.iter_mut().find(|e| e["name"] == "mcp.call") {
         entry["mcp_exposed"] = serde_json::json!(state.mcp.is_some());
         if let Some(gateway) = &state.mcp {
-            entry["availability"] = serde_json::json!(if gateway.fixture_only() {
-                "fixture_only"
-            } else {
-                "enabled"
-            });
+            entry["availability"] = serde_json::json!(availability(gateway));
             entry["execution_paths"] = serde_json::json!(["mcp_invocation"]);
         }
     }
@@ -476,7 +489,7 @@ mod tests {
         assert!(operation_catalog(&state).is_empty());
         assert_eq!(
             call(&state, "mcp_catalog", json!({})).await.result.unwrap(),
-            json!({"tools":[]})
+            json!({"tools":[],"gateway":{"availability":"disabled"}})
         );
         for method in ["mcp_call", "mcp_get", "mcp_revoke"] {
             denied(call(&state, method, json!({"secret":"must not echo"})).await);
@@ -490,6 +503,7 @@ mod tests {
         let catalog = call(&state, "mcp_catalog", json!({})).await.result.unwrap();
         assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
         assert_eq!(catalog["tools"][0]["name"], "opaque_mcp_tool_post_note");
+        assert_eq!(catalog["gateway"], json!({"availability":"enabled"}));
         let operation = operation_catalog(&state)
             .into_iter()
             .find(|e| e["name"] == "mcp.call")
@@ -505,9 +519,11 @@ mod tests {
             denied(call(&state, "mcp_catalog", params).await);
         }
         state.enclave.swap_policy(PolicyEngine::new());
+        // Policy hides every route, yet owned receipts stay readable, so the
+        // gateway still reports itself as served.
         assert_eq!(
-            call(&state, "mcp_catalog", json!({})).await.result.unwrap()["tools"],
-            json!([])
+            call(&state, "mcp_catalog", json!({})).await.result.unwrap(),
+            json!({"tools":[],"gateway":{"availability":"enabled"}})
         );
     }
 
