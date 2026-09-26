@@ -9,6 +9,22 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+### Added
+
+- The unreleased scoped-authority workflow can govern a real operation: one
+  GitHub Actions `workflow_dispatch` of a pinned repository, workflow file and
+  branch. `AuthorityPolicy` gains a second operation kind,
+  `github.workflow.dispatch`, whose `workflows` list is the complete target set
+  a scope may name; manifests that mix it with `allowedStatuses` are rejected.
+  The broker reuses the GitHub protocol shared with the staging task family,
+  re-reads the branch head before the single POST, records `api_accepted` for a
+  `204` acknowledgment, `rejected` when GitHub or the head check refuses, and
+  `unknown` for any other answer while keeping the attempt charged and never
+  resending. `opaque scope outcome` states plainly that an unknown dispatch may
+  or may not have started a run. `support.case.set_status`, legacy TOML and
+  `authority-policy migrate` are unchanged. See `docs/scoped-authority.md` and
+  `examples/authority-policy/staging-dispatch.yaml`.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

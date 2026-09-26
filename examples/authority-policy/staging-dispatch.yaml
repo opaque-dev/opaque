@@ -1,0 +1,24 @@
+apiVersion: policy.opaque.dev/v1alpha1
+kind: AuthorityPolicy
+metadata:
+  name: staging-dispatch
+  namespace: release
+spec:
+  tenantRef: example
+  connectorRef: github
+  authority:
+    # Maps to the broker operation github.dispatch_staging_workflow.
+    operation: github.workflow.dispatch
+    # The complete set of dispatch targets a scope may select. A scope resource
+    # is "{repository}:{path}:{ref}"; anything else is denied before review.
+    workflows:
+      - repository: example-org/service
+        path: .github/workflows/staging.yml
+        ref: main
+    maxResources: 1
+    maxAttempts: 5
+    maxDuration: 1h
+  approval:
+    scope: Required
+    action: EveryAction
+    reviewerRef: release-approver

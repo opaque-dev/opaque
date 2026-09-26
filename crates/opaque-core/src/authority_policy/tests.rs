@@ -6,6 +6,14 @@ fn fixture() -> Value {
     "spec":{"tenantRef":"example","connectorRef":"support","authority":{"operation":OPERATION,"allowedStatuses":["resolved","closed"],"maxResources":2,"maxAttempts":10,"maxDuration":"1h"},
     "approval":{"scope":"Required","reviewerRef":"ops"}}})
 }
+fn dispatch_fixture() -> Value {
+    json!({"apiVersion":API_VERSION,"kind":KIND,"metadata":{"name":"staging-dispatch","namespace":"release"},
+    "spec":{"tenantRef":"example","connectorRef":"github","authority":{"operation":DISPATCH_OPERATION,"workflows":[
+        {"repository":"example-org/service","path":".github/workflows/staging.yml","ref":"main"},
+        {"repository":"example-org/service","path":".github/workflows/staging.yml","ref":"release/2026-09"}],
+        "maxResources":2,"maxAttempts":5,"maxDuration":"30m"},
+    "approval":{"scope":"Required","reviewerRef":"ops"}}})
+}
 fn check(v: &Value) -> Result<CompiledPolicy, String> {
     compile(&serde_json::to_vec(v).unwrap())
 }
@@ -15,7 +23,14 @@ fn equivalent_documents_canonicalize_defaults_duration_and_order() {
     assert_eq!(first.policy.spec.authority.max_duration, "3600s");
     assert_eq!(
         first.policy.spec.authority.allowed_statuses,
-        vec![Status::Closed, Status::Resolved]
+        Some(vec![Status::Closed, Status::Resolved])
+    );
+    assert!(first.policy.spec.authority.workflows.is_none());
+    // The support kind serializes exactly as before the dispatch kind existed.
+    let canonical = serde_json::to_value(&first.policy).unwrap();
+    assert_eq!(
+        canonical["spec"]["authority"],
+        json!({"operation":OPERATION,"allowedStatuses":["closed","resolved"],"maxResources":2,"maxAttempts":10,"maxDuration":"3600s"})
     );
     assert_eq!(
         first.policy.spec.approval.action,
@@ -34,6 +49,175 @@ fn equivalent_documents_canonicalize_defaults_duration_and_order() {
         compile(&serde_json::to_vec(&first.policy).unwrap()).unwrap(),
         first
     );
+}
+#[test]
+fn dispatch_kind_canonicalizes_targets_and_binds_them_into_the_digest() {
+    let first = check(&dispatch_fixture()).unwrap();
+    let authority = &first.policy.spec.authority;
+    assert_eq!(authority.operation, DISPATCH_OPERATION);
+    assert!(authority.allowed_statuses.is_none());
+    assert_eq!(authority.max_duration, "1800s");
+    let targets = authority.workflows.as_ref().unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].git_ref, "main");
+    assert_eq!(
+        targets[0].resource(),
+        "example-org/service:.github/workflows/staging.yml:main"
+    );
+    assert_eq!(
+        WorkflowTarget::parse(&targets[1].resource()).unwrap(),
+        targets[1]
+    );
+    let mut reordered = dispatch_fixture();
+    reordered["spec"]["authority"]["workflows"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    reordered["spec"]["authority"]["maxDuration"] = json!("1800s");
+    assert_eq!(check(&reordered).unwrap(), first);
+    assert_eq!(
+        compile(&serde_json::to_vec(&first.policy).unwrap()).unwrap(),
+        first
+    );
+    let yaml = b"apiVersion: policy.opaque.dev/v1alpha1\nkind: AuthorityPolicy\nmetadata: {name: staging-dispatch, namespace: release}\nspec:\n  tenantRef: example\n  connectorRef: github\n  authority:\n    operation: github.workflow.dispatch\n    workflows:\n      - {repository: example-org/service, path: .github/workflows/staging.yml, ref: release/2026-09}\n      - {repository: example-org/service, path: .github/workflows/staging.yml, ref: main}\n    maxResources: 2\n    maxAttempts: 5\n    maxDuration: 30m\n  approval: {scope: Required, reviewerRef: ops}\n";
+    assert_eq!(compile(yaml).unwrap(), first);
+    assert_ne!(first.digest, check(&fixture()).unwrap().digest);
+    for (pointer, replacement) in [
+        ("/spec/authority/workflows/0/ref", json!("develop")),
+        (
+            "/spec/authority/workflows/0/path",
+            json!(".github/workflows/production.yml"),
+        ),
+        (
+            "/spec/authority/workflows/0/repository",
+            json!("example-org/other"),
+        ),
+    ] {
+        let mut v = dispatch_fixture();
+        *v.pointer_mut(pointer).unwrap() = replacement;
+        assert_ne!(check(&v).unwrap().digest, first.digest, "{pointer}");
+    }
+}
+#[test]
+fn dispatch_kind_rejects_mixed_fields_and_untyped_targets_in_schema_and_compiler() {
+    let validator = jsonschema::validator_for(&json_schema()).unwrap();
+    assert!(validator.is_valid(&dispatch_fixture()));
+    let mut mixed = dispatch_fixture();
+    mixed["spec"]["authority"]["allowedStatuses"] = json!(["closed"]);
+    assert!(check(&mixed).is_err());
+    assert!(!validator.is_valid(&mixed));
+    let mut mixed = fixture();
+    mixed["spec"]["authority"]["workflows"] =
+        dispatch_fixture()["spec"]["authority"]["workflows"].clone();
+    assert!(check(&mixed).is_err());
+    assert!(!validator.is_valid(&mixed));
+    let mut swapped = fixture();
+    swapped["spec"]["authority"]["operation"] = json!(DISPATCH_OPERATION);
+    assert!(check(&swapped).is_err());
+    assert!(!validator.is_valid(&swapped));
+    let mut swapped = dispatch_fixture();
+    swapped["spec"]["authority"]["operation"] = json!(OPERATION);
+    assert!(check(&swapped).is_err());
+    assert!(!validator.is_valid(&swapped));
+    let mut explicit_empty = dispatch_fixture();
+    explicit_empty["spec"]["authority"]["allowedStatuses"] = json!([]);
+    assert!(check(&explicit_empty).is_err());
+    assert!(!validator.is_valid(&explicit_empty));
+    // The compiler is authoritative. The portable schema rejects what a regular
+    // expression can express; the git-specific refusals (a `refs/` path, `..`,
+    // a bare commit SHA, a traversal component) are compiler-only.
+    for (pointer, replacement, schema_rejects) in [
+        ("/spec/authority/workflows", json!([]), true),
+        (
+            "/spec/authority/workflows/0/repository",
+            json!("service"),
+            true,
+        ),
+        (
+            "/spec/authority/workflows/0/repository",
+            json!("a/b/c"),
+            true,
+        ),
+        (
+            "/spec/authority/workflows/0/repository",
+            json!("example-org/../service"),
+            true,
+        ),
+        (
+            "/spec/authority/workflows/0/repository",
+            json!("../service"),
+            false,
+        ),
+        (
+            "/spec/authority/workflows/0/path",
+            json!("staging.yml"),
+            true,
+        ),
+        (
+            "/spec/authority/workflows/0/path",
+            json!(".github/workflows/nested/staging.yml"),
+            true,
+        ),
+        (
+            "/spec/authority/workflows/0/path",
+            json!(".github/workflows/staging.txt"),
+            true,
+        ),
+        ("/spec/authority/workflows/0/ref", json!(""), true),
+        (
+            "/spec/authority/workflows/0/ref",
+            json!("refs/heads/main"),
+            false,
+        ),
+        (
+            "/spec/authority/workflows/0/ref",
+            json!("main..feature"),
+            false,
+        ),
+        (
+            "/spec/authority/workflows/0/ref",
+            json!("a".repeat(40)),
+            false,
+        ),
+        ("/spec/authority/workflows/0/ref", json!("main:tag"), true),
+        (
+            "/spec/authority/workflows/0/ref",
+            json!("release@2026"),
+            true,
+        ),
+        ("/spec/authority/workflows/0/ref", json!(".hidden"), true),
+    ] {
+        let mut v = dispatch_fixture();
+        *v.pointer_mut(pointer).unwrap() = replacement;
+        assert!(check(&v).is_err(), "{pointer}");
+        assert_eq!(!validator.is_valid(&v), schema_rejects, "{pointer}");
+    }
+    let mut duplicate = dispatch_fixture();
+    duplicate["spec"]["authority"]["workflows"][1] =
+        duplicate["spec"]["authority"]["workflows"][0].clone();
+    assert!(check(&duplicate).is_err());
+    assert!(!validator.is_valid(&duplicate));
+    let mut unknown = dispatch_fixture();
+    unknown["spec"]["authority"]["workflows"][0]["inputs"] = json!({"environment":"production"});
+    assert!(check(&unknown).is_err());
+    assert!(!validator.is_valid(&unknown));
+    let mut wide = dispatch_fixture();
+    wide["spec"]["authority"]["workflows"] = json!(
+        (0..=MAX_WORKFLOWS)
+            .map(|i| json!({"repository":format!("example-org/service-{i}"),"path":".github/workflows/staging.yml","ref":"main"}))
+            .collect::<Vec<_>>()
+    );
+    assert!(check(&wide).is_err());
+    assert!(!validator.is_valid(&wide));
+    for resource in [
+        "example-org/service",
+        "example-org/service:.github/workflows/staging.yml",
+        "example-org/service:.github/workflows/staging.yml:main:extra",
+        "example-org/service:.github/workflows/staging.yml:refs/heads/main",
+        "",
+    ] {
+        assert!(WorkflowTarget::parse(resource).is_err(), "{resource}");
+    }
 }
 #[test]
 fn digest_binds_every_identity_authority_and_approval_field() {

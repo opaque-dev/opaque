@@ -67,6 +67,42 @@ fn resolution_pins_identity_and_only_trusted_config_supplies_connector_and_revie
     assert!(config.resolve(&foreign).is_err());
 }
 #[test]
+fn dispatch_manifest_resolves_to_targets_only_and_mixed_kinds_never_bind() {
+    let (dir, mut config, tenant) = fixture();
+    let staging = json!({"repository":"example-org/service","path":".github/workflows/staging.yml","ref":"main"});
+    let release = json!({"repository":"example-org/service","path":".github/workflows/staging.yml","ref":"release/2026-09"});
+    let manifest = json!({"apiVersion":policy::API_VERSION,"kind":policy::KIND,"metadata":{"name":"cases","namespace":"support"},
+        "spec":{"tenantRef":"example","connectorRef":"support","authority":{"operation":policy::DISPATCH_OPERATION,
+        "workflows":[release,staging],"maxResources":2,"maxAttempts":5,"maxDuration":"30m"},
+        "approval":{"scope":"Required","reviewerRef":"ops"}}});
+    std::fs::write(&config.path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    // The support digest no longer matches the dispatch manifest.
+    assert!(config.resolve(&tenant).is_err());
+    config.digest = policy::read(&config.path).unwrap().digest;
+    let resolved = config.resolve(&tenant).unwrap();
+    assert!(resolved.allowed_statuses.is_empty());
+    let targets = resolved.workflows.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets.windows(2).all(|w| w[0] < w[1]));
+    assert_eq!(targets[0].git_ref, "main");
+    assert_eq!(resolved.max_scope_seconds, 1800);
+    assert_eq!(resolved.max_attempts, 5);
+    assert!(resolved.exact_action);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    // A manifest carrying both kinds' fields fails compilation, so it cannot be
+    // pinned; the loader never sees a half-typed authority.
+    let mut mixed = manifest.clone();
+    mixed["spec"]["authority"]["allowedStatuses"] = json!(["closed"]);
+    std::fs::write(&config.path, serde_json::to_vec(&mixed).unwrap()).unwrap();
+    assert!(policy::read(&config.path).is_err());
+    assert!(config.resolve(&tenant).is_err());
+    let mut unknown = manifest;
+    unknown["spec"]["authority"]["operation"] = json!("github.workflow.delete");
+    std::fs::write(&config.path, serde_json::to_vec(&unknown).unwrap()).unwrap();
+    assert!(policy::read(&config.path).is_err());
+    assert!(config.resolve(&tenant).is_err());
+}
+#[test]
 fn startup_selection_is_exclusive_and_explicit_standing_scope_stays_human_issued() {
     let (_dir, mut config, tenant) = fixture();
     assert!(resolve(None, None, &tenant).unwrap().is_none());

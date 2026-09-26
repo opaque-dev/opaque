@@ -23,6 +23,7 @@ use std::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod authority_policy;
+mod github_dispatch;
 mod qualification;
 
 struct Provider {
@@ -157,6 +158,31 @@ struct Fixture {
 }
 impl Fixture {
     fn new(provider: &Provider, exact: bool) -> Self {
+        Self::build(
+            &provider.endpoint,
+            &provider.certificate,
+            |profile, reviewer_id, reviewer_public_key| Config {
+                authority_policy: None,
+                workflows: None,
+                profile,
+                reviewer_id,
+                reviewer_public_key,
+                generation: 1,
+                max_scope_seconds: 3600,
+                max_attempts: 2,
+                max_resources: 2,
+                exact_action: exact,
+                allowed_statuses: vec![Status::Closed, Status::Resolved],
+            },
+        )
+    }
+    /// Real identity/enrollment stores plus a broker-custody credential and CA
+    /// file for the given HTTPS endpoint; the closure selects the kind.
+    fn build(
+        endpoint: &str,
+        certificate: &str,
+        configure: impl FnOnce(connector::Profile, String, String) -> Config,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let identity_config: IdentityConfig = serde_json::from_value(
@@ -243,24 +269,17 @@ impl Fixture {
         std::fs::write(&token, "fixture-provider-token").unwrap();
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
         let ca = directory.path().join("provider-ca.pem");
-        std::fs::write(&ca, &provider.certificate).unwrap();
+        std::fs::write(&ca, certificate).unwrap();
         std::fs::set_permissions(&ca, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let config = Config {
-            authority_policy: None,
-            profile: connector::Profile {
-                endpoint: provider.endpoint.clone(),
+        let config = configure(
+            connector::Profile {
+                endpoint: endpoint.into(),
                 token_file: token,
                 ca_certificate_file: Some(ca),
             },
-            reviewer_id: reviewer.id.to_string(),
-            reviewer_public_key: enrolled.public_key_hex,
-            generation: 1,
-            max_scope_seconds: 3600,
-            max_attempts: 2,
-            max_resources: 2,
-            exact_action: exact,
-            allowed_statuses: vec![Status::Closed, Status::Resolved],
-        };
+            reviewer.id.to_string(),
+            enrolled.public_key_hex,
+        );
         let tenant =
             TenantBinding::new(TenantId::parse("fixture").unwrap(), uuid::Uuid::new_v4()).unwrap();
         let runtime = Runtime::open(config, &tenant, directory.path(), identity, pairing).unwrap();
@@ -348,7 +367,7 @@ impl Fixture {
                     scope_id: scope.scope_id.clone(),
                     issuance_round_id: issuance.into(),
                     resource: "case1".into(),
-                    status: Status::Closed,
+                    status: Some(Status::Closed),
                     request_id: request.into(),
                 },
                 &self.context,
@@ -525,7 +544,7 @@ async fn standing_issuance_respects_budget_and_exact_policy_cannot_skip_review()
             scope_id: scope.scope_id.clone(),
             issuance_round_id: issuance.clone(),
             resource: "case1".into(),
-            status: Status::Closed,
+            status: Some(Status::Closed),
             request_id: id.into(),
         };
         let first = f.runtime.run(prepare("request1"), &f.context).await;
@@ -687,7 +706,7 @@ async fn provider_read_is_bounded_and_typed_before_a_review_can_be_created() {
                         scope_id: scope.scope_id.clone(),
                         issuance_round_id: issuance,
                         resource: "case1".into(),
-                        status: Status::Closed,
+                        status: Some(Status::Closed),
                         request_id: "request1".into()
                     },
                     &f.context
@@ -871,10 +890,10 @@ async fn connector_identifiers_cannot_select_paths_headers_or_create_an_attempt(
         "case1/other",
         "case1\r\nAuthorization: bad",
     ] {
-        assert!(f.runtime.connector.read(id).await.is_err());
+        assert!(f.runtime.support().read(id).await.is_err());
         assert_eq!(
             f.runtime
-                .connector
+                .support()
                 .write(id, "v1", Status::Closed, "action1")
                 .await,
             Outcome::Unknown
@@ -883,14 +902,14 @@ async fn connector_identifiers_cannot_select_paths_headers_or_create_an_attempt(
     assert!(connector::identifier(&"x".repeat(129)).is_err());
     assert_eq!(
         f.runtime
-            .connector
+            .support()
             .write("case1", "", Status::Closed, "action1")
             .await,
         Outcome::Unknown
     );
     assert_eq!(
         f.runtime
-            .connector
+            .support()
             .write("case1", "v1", Status::Closed, "")
             .await,
         Outcome::Unknown
@@ -928,14 +947,14 @@ async fn credential_rotation_at_restart_invalidates_old_scope_and_approved_actio
     let (scope, issuance) = f.issued(1);
     let review = f.prepared(&scope, &issuance, "request1").await;
     f.approve(&review);
-    let original_profile = f.runtime.connector.digest.clone();
+    let original_profile = f.runtime.support().digest.clone();
     std::fs::write(
         &f.runtime.config.profile.token_file,
         "fixture-other-provider-account-token",
     )
     .unwrap();
     let f = f.restart();
-    assert_ne!(f.runtime.connector.digest, original_profile);
+    assert_ne!(f.runtime.support().digest, original_profile);
     assert!(f.execute(&review, &issuance).await.is_err());
     assert!(
         f.runtime
@@ -944,7 +963,7 @@ async fn credential_rotation_at_restart_invalidates_old_scope_and_approved_actio
                     scope_id: scope.scope_id.clone(),
                     issuance_round_id: issuance,
                     resource: "case1".into(),
-                    status: Status::Closed,
+                    status: Some(Status::Closed),
                     request_id: "request2".into()
                 },
                 &f.context
@@ -961,7 +980,7 @@ async fn credential_rotation_at_restart_invalidates_old_scope_and_approved_actio
         0
     );
     let (fresh, _) = f.issued(1);
-    assert_eq!(fresh.provider_profile_digest, f.runtime.connector.digest);
+    assert_eq!(fresh.provider_profile_digest, f.runtime.support().digest);
     assert_ne!(fresh.provider_profile_digest, scope.provider_profile_digest);
     let requests = provider.finish().await;
     assert_eq!(requests.len(), 1);
@@ -1071,17 +1090,17 @@ async fn configured_ca_rotation_requires_fresh_scope_before_any_provider_write()
         .ca_certificate_file
         .as_ref()
         .unwrap();
-    let original = f.runtime.connector.digest.clone();
+    let original = f.runtime.support().digest.clone();
     let other = rcgen::generate_simple_self_signed(vec!["other.invalid".into()]).unwrap();
     std::fs::write(path, other.cert.pem()).unwrap();
     // The loaded connector remains immutable until an explicit broker restart.
-    assert_eq!(f.runtime.connector.digest, original);
+    assert_eq!(f.runtime.support().digest, original);
     assert_ne!(
         Connector::new(&f.runtime.config.profile).unwrap().digest,
         original
     );
     let f = f.restart();
-    assert_ne!(f.runtime.connector.digest, original);
+    assert_ne!(f.runtime.support().digest, original);
     assert!(f.execute(&review, &issuance).await.is_err());
     assert!(
         f.runtime
@@ -1090,7 +1109,7 @@ async fn configured_ca_rotation_requires_fresh_scope_before_any_provider_write()
                     scope_id: scope.scope_id.clone(),
                     issuance_round_id: issuance,
                     resource: "case1".into(),
-                    status: Status::Closed,
+                    status: Some(Status::Closed),
                     request_id: "new-request".into(),
                 },
                 &f.context
@@ -1107,7 +1126,7 @@ async fn configured_ca_rotation_requires_fresh_scope_before_any_provider_write()
         0
     );
     let (fresh, _) = f.issued(1);
-    assert_eq!(fresh.provider_profile_digest, f.runtime.connector.digest);
+    assert_eq!(fresh.provider_profile_digest, f.runtime.support().digest);
     assert_ne!(fresh.provider_profile_digest, scope.provider_profile_digest);
     let requests = provider.finish().await;
     assert_eq!(requests.len(), 1);

@@ -58,7 +58,7 @@ runtime, a reviewer queue becoming empty, or a worker restarting does not establ
 that its external effects stopped. Recovery starts by reading retained outcomes.
 It needs explicit reconciliation before anyone considers replacement work.
 
-The [support-case workflow](scoped-authority.md) exposes authenticated outcome
+The [scope workflow](scoped-authority.md) exposes authenticated outcome
 reads and scope revocation. Its broker checks current authority before dispatch;
 the external provider must enforce the documented resource-version precondition.
 

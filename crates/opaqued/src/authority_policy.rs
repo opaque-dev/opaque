@@ -30,6 +30,28 @@ impl Config {
         let compiled = policy::read(&self.path)?;
         self.bind(&compiled, tenant)?;
         let authority = &compiled.policy.spec.authority;
+        // The compiler admits exactly one kind-specific field per operation.
+        let (allowed_statuses, workflows) = match (
+            authority.operation.as_str(),
+            &authority.allowed_statuses,
+            &authority.workflows,
+        ) {
+            (policy::OPERATION, Some(statuses), None) => (
+                statuses
+                    .iter()
+                    .map(|s| match s {
+                        policy::Status::Open => crate::scope_runtime::connector::Status::Open,
+                        policy::Status::Closed => crate::scope_runtime::connector::Status::Closed,
+                        policy::Status::Resolved => {
+                            crate::scope_runtime::connector::Status::Resolved
+                        }
+                    })
+                    .collect(),
+                None,
+            ),
+            (policy::DISPATCH_OPERATION, None, Some(targets)) => (vec![], Some(targets.clone())),
+            _ => return Err("authority policy operation is not supported by this broker".into()),
+        };
         Ok(crate::scope_runtime::Config {
             profile: self.profile.clone(),
             reviewer_id: self.reviewer_id.clone(),
@@ -39,15 +61,8 @@ impl Config {
             max_attempts: authority.max_attempts,
             max_resources: authority.max_resources,
             exact_action: compiled.policy.spec.approval.action == ActionApproval::EveryAction,
-            allowed_statuses: authority
-                .allowed_statuses
-                .iter()
-                .map(|s| match s {
-                    policy::Status::Open => crate::scope_runtime::connector::Status::Open,
-                    policy::Status::Closed => crate::scope_runtime::connector::Status::Closed,
-                    policy::Status::Resolved => crate::scope_runtime::connector::Status::Resolved,
-                })
-                .collect(),
+            allowed_statuses,
+            workflows,
             authority_policy: Some(compiled),
         })
     }

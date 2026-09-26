@@ -17,6 +17,7 @@ mod prepared_tests;
 pub mod release;
 mod rpc;
 mod task;
+pub mod workflow;
 
 pub use release::{
     dispatch_staging_release, plan_staging_release, prepare_staging_release,
