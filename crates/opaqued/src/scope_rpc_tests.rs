@@ -6,6 +6,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use opaque_approval::pairing::{PairingManager, WorkstationApproverConfig, store::DeviceStore};
 use opaque_core::{
     audit::{AuditEvent, AuditFlushError, InMemoryAuditEmitter},
+    authority_policy::WorkflowTarget,
     identity::Role,
     tenant::{TenantBinding, TenantId},
     workstation::{EnrollmentRequest, enrollment_bytes, hex},
@@ -27,6 +28,11 @@ const METHODS: &[&str] = &[
 ];
 
 fn fixture(required: bool) -> Fixture {
+    scoped(required, None)
+}
+
+/// `targets` selects the GitHub `workflow_dispatch` kind; None is the support kind.
+fn scoped(required: bool, targets: Option<Vec<WorkflowTarget>>) -> Fixture {
     let mut fixture = Fixture::new(true);
     Arc::get_mut(fixture.state.identity.as_mut().unwrap())
         .unwrap()
@@ -88,12 +94,17 @@ fn fixture(required: bool) -> Fixture {
     let token = fixture.directory.path().join("fixture-provider.token");
     std::fs::write(&token, "fixture-no-network-token").unwrap();
     std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let config = serde_json::from_value(json!({
+    let mut config: scope_runtime::Config = serde_json::from_value(json!({
         "profile":{"endpoint":"https://scope-provider.example.invalid/","token_file":token},
         "reviewer_id":reviewer.id,"reviewer_public_key":public_key,
         "allowed_statuses":["closed"],"exact_action":true
     }))
     .unwrap();
+    if targets.is_some() {
+        // Only the sealed manifest loader can select this kind; TOML cannot.
+        config.allowed_statuses.clear();
+        config.workflows = targets;
+    }
     let tenant = TenantBinding::new(
         TenantId::parse("scope-rpc-fixture").unwrap(),
         Uuid::new_v4(),
@@ -244,6 +255,80 @@ async fn live_session_reaches_scope_runtime_and_revocation_gates_every_scope_met
         );
     }
     assert_eq!(retained_counts(&fixture), (1, 0, 0));
+}
+
+#[tokio::test]
+async fn dispatch_kind_routes_through_the_daemon_and_policy_denies_foreign_targets_before_review() {
+    let staging = WorkflowTarget {
+        repository: "example-org/service".into(),
+        path: ".github/workflows/staging.yml".into(),
+        git_ref: "main".into(),
+    };
+    let fixture = scoped(true, Some(vec![staging.clone()]));
+    let session = session(&fixture).await;
+    let dispatch_plan =
+        |resource: String| json!({"resources":[resource],"expires_in_secs":600,"max_attempts":1});
+    // Support-shaped requests and every foreign target are refused with no round.
+    for params in [
+        plan(),
+        dispatch_plan("example-org/other:.github/workflows/staging.yml:main".into()),
+        dispatch_plan("example-org/service:.github/workflows/production.yml:main".into()),
+        dispatch_plan("example-org/service:.github/workflows/staging.yml:develop".into()),
+        dispatch_plan("example-org/service:.github/workflows/staging.yml:refs/heads/main".into()),
+        json!({"resources":[staging.resource()],"statuses":["closed"],"expires_in_secs":600,"max_attempts":1}),
+    ] {
+        error(
+            call(
+                &fixture,
+                "scope_plan",
+                params,
+                ClientType::Agent,
+                Some(&session),
+            )
+            .await,
+            "scope_unavailable",
+        );
+    }
+    assert_eq!(retained_counts(&fixture), (0, 0, 0));
+    let created = ok(call(
+        &fixture,
+        "scope_plan",
+        dispatch_plan(staging.resource()),
+        ClientType::Agent,
+        Some(&session),
+    )
+    .await);
+    let draft = &created["document"]["subject"]["draft"];
+    assert_eq!(created["document"]["subject"]["kind"], "scope_issuance");
+    assert_eq!(draft["operation"], "github.dispatch_staging_workflow");
+    assert_eq!(draft["resources"], json!([staging.resource()]));
+    assert_eq!(
+        draft["fields"],
+        json!([{"field":"ref","allowed_values":["main"]}])
+    );
+    assert_eq!(retained_counts(&fixture), (1, 0, 0));
+    // A prepared action outside the approved scope never reaches the ledger or
+    // the provider: the fixture endpoint is unroutable and no read is attempted.
+    error(
+        call(
+            &fixture,
+            "scope_prepare",
+            json!({"scope_id":"missing","issuance_round_id":created["document"]["round_id"],
+                "resource":"example-org/service:.github/workflows/production.yml:main","request_id":"request-1"}),
+            ClientType::Agent,
+            Some(&session),
+        )
+        .await,
+        "scope_unavailable",
+    );
+    assert_eq!(retained_counts(&fixture), (1, 0, 0));
+    assert!(
+        fixture
+            .audit
+            .events_of_kind(AuditEventKind::RequestReceived)
+            .iter()
+            .all(|event| event.operation.as_deref() == Some("github.dispatch_staging_workflow"))
+    );
 }
 
 #[derive(Debug)]

@@ -185,7 +185,7 @@ enum Cmd {
         #[command(subcommand)]
         action: TaskAction,
     },
-    /// Issue and inspect bounded support-case authority.
+    /// Issue and inspect bounded scoped authority (support cases, staging dispatch).
     Scope {
         #[command(subcommand)]
         action: scope_command::Action,
@@ -3337,6 +3337,11 @@ async fn main() {
                 } else if !quiet {
                     ui::success("Done (no result payload)");
                 }
+            }
+            if let Some(note) = scope_command::unknown_outcome_note(method, resp.result.as_ref()) {
+                // Stdout stays the exact daemon payload; the plain statement of
+                // what `unknown` means for this operation goes to stderr.
+                eprintln!("{note}");
             }
             if method == "task_run"
                 && resp
