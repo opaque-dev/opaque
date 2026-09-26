@@ -9,24 +9,165 @@
 //! not on the wrapper, which is the failure mode that made every exec die in
 //! 0.4.0 and 0.5.0.
 //!
+//! The binary speaks the libtest command line that `cargo test`, nextest
+//! (`--list --format terse`, `<name> --nocapture --exact`) and the coverage
+//! collector (`--list`, `--list --ignored`, `--exact <name>`) drive, and
+//! prints libtest-shaped results, so it behaves as one test named
+//! `linux_sandbox_strategies` everywhere. Diagnostics are buffered and shown
+//! only on failure or with `--nocapture`, like captured test output.
+//!
 //! Strategies the host cannot run are reported as SKIP lines and do not fail
-//! the binary, unless `OPAQUE_SANDBOX_E2E_REQUIRE` names them (comma
+//! the test, unless `OPAQUE_SANDBOX_E2E_REQUIRE` names them (comma
 //! separated: `bubblewrap`, `unshare`). The Linux verification containers set
 //! it so a skip can never pass silently there.
 
+use std::time::Instant;
+
+/// The single test this binary reports.
+const TEST_NAME: &str = "linux_sandbox_strategies";
+
+/// libtest's exit status for a failed test run.
+const LIBTEST_FAILURE: i32 = 101;
+
+/// The libtest arguments this harness understands (unknown flags are ignored).
+#[derive(Debug, Default)]
+struct Invocation {
+    list: bool,
+    terse: bool,
+    ignored: bool,
+    nocapture: bool,
+    exact: bool,
+    filters: Vec<String>,
+    skips: Vec<String>,
+}
+
+impl Invocation {
+    fn parse(args: impl IntoIterator<Item = String>) -> Self {
+        let mut inv = Self::default();
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--list" => inv.list = true,
+                "--ignored" => inv.ignored = true,
+                "--exact" => inv.exact = true,
+                "--nocapture" | "--no-capture" => inv.nocapture = true,
+                "--format" => inv.terse = args.next().as_deref() == Some("terse"),
+                "--skip" => inv.skips.extend(args.next()),
+                // Flags that take a value we do not use.
+                "--test-threads" | "--color" | "--logfile" | "-Z" | "--shuffle-seed" => {
+                    args.next();
+                }
+                _ if arg.starts_with("--format=") => {
+                    inv.terse = arg.ends_with("=terse");
+                }
+                _ if arg.starts_with("--skip=") => {
+                    inv.skips.push(arg["--skip=".len()..].to_owned());
+                }
+                _ if arg.starts_with('-') => {}
+                _ => inv.filters.push(arg),
+            }
+        }
+        inv
+    }
+
+    /// Whether the libtest filters select our one test.
+    fn selects(&self) -> bool {
+        let matches = |pattern: &String| {
+            if self.exact {
+                pattern == TEST_NAME
+            } else {
+                TEST_NAME.contains(pattern.as_str())
+            }
+        };
+        (self.filters.is_empty() || self.filters.iter().any(matches))
+            && !self.skips.iter().any(matches)
+    }
+}
+
+fn print_inventory(inv: &Invocation) {
+    // Nothing is ignored, so `--ignored` lists an empty set.
+    let count = usize::from(!inv.ignored);
+    if count == 1 {
+        println!("{TEST_NAME}: test");
+    }
+    if !inv.terse {
+        println!();
+        println!(
+            "{count} {}, 0 benchmarks",
+            if count == 1 { "test" } else { "tests" }
+        );
+    }
+}
+
+fn print_summary(ok: bool, ran: usize, filtered_out: usize, elapsed: f64) {
+    println!();
+    println!(
+        "test result: {}. {} passed; {} failed; 0 ignored; 0 measured; {filtered_out} filtered out; finished in {elapsed:.2}s",
+        if ok { "ok" } else { "FAILED" },
+        usize::from(ok) * ran,
+        usize::from(!ok) * ran,
+    );
+    println!();
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
-    {
-        opaque_sandbox::linux::maybe_run_helper();
-        linux::run();
+    opaque_sandbox::linux::maybe_run_helper();
+
+    let inv = Invocation::parse(std::env::args().skip(1));
+    if inv.list {
+        print_inventory(&inv);
+        return;
     }
-    #[cfg(not(target_os = "linux"))]
-    println!("linux_sandbox_e2e: not a Linux host, nothing to verify");
+    if !inv.selects() {
+        println!();
+        println!("running 0 tests");
+        print_summary(true, 0, 1, 0.0);
+        return;
+    }
+
+    println!();
+    println!("running 1 test");
+    let start = Instant::now();
+    let mut report = String::new();
+    let ok = run_checks(&mut report);
+    if ok {
+        println!("test {TEST_NAME} ... ok");
+        if inv.nocapture {
+            eprint!("{report}");
+        }
+    } else {
+        println!("test {TEST_NAME} ... FAILED");
+        println!();
+        println!("failures:");
+        println!();
+        println!("---- {TEST_NAME} stdout ----");
+        print!("{report}");
+        println!();
+        println!("failures:");
+        println!("    {TEST_NAME}");
+    }
+    print_summary(ok, 1, 0, start.elapsed().as_secs_f64());
+    if !ok {
+        std::process::exit(LIBTEST_FAILURE);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_checks(report: &mut String) -> bool {
+    report.push_str("not a Linux host, nothing to verify\n");
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn run_checks(report: &mut String) -> bool {
+    linux::run(report)
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
     use std::collections::HashMap;
+    use std::fmt::Write as _;
     use std::path::Path;
 
     use opaque_core::proto::{ExecFrame, ExecStream};
@@ -99,25 +240,31 @@ mod linux {
         outcome
     }
 
-    struct Report {
+    /// Collects check results into the buffered report.
+    struct Report<'a> {
+        out: &'a mut String,
         failures: usize,
         exercised: usize,
     }
 
-    impl Report {
+    impl Report<'_> {
+        fn line(&mut self, text: &str) {
+            let _ = writeln!(self.out, "{text}");
+        }
+
         fn check(&mut self, label: &str, ok: bool, detail: &str) {
             if ok {
-                println!("  ok    {label}");
+                self.line(&format!("  ok    {label}"));
             } else {
                 self.failures += 1;
-                println!("  FAIL  {label}: {detail}");
+                self.line(&format!("  FAIL  {label}: {detail}"));
             }
         }
     }
 
-    async fn exercise(strategy: &SandboxStrategy, report: &mut Report) {
+    async fn exercise(strategy: &SandboxStrategy, report: &mut Report<'_>) {
         let name = strategy.name();
-        println!("== strategy {name}");
+        report.line(&format!("== strategy {name}"));
         report.exercised += 1;
         let project = tempfile::tempdir().expect("tempdir");
         let project_path = project
@@ -270,7 +417,9 @@ mod linux {
                     &connect.describe(),
                 );
             } else {
-                println!("  SKIP  {name}: seccomp connect probe needs bash inside the sandbox");
+                report.line(&format!(
+                    "  SKIP  {name}: seccomp connect probe needs bash inside the sandbox"
+                ));
             }
         }
 
@@ -315,13 +464,20 @@ mod linux {
             .collect()
     }
 
-    pub fn run() {
+    /// Run every check the host allows, appending the report to `out`.
+    /// Returns whether all checks passed.
+    pub fn run(out: &mut String) -> bool {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("tokio runtime");
         let caps = SandboxCapabilities::detect();
-        println!(
+        let mut report = Report {
+            out,
+            failures: 0,
+            exercised: 0,
+        };
+        report.line(&format!(
             "host: kernel={} bubblewrap={} ({}) landlock={} ({}) seccomp={} user_namespaces={} ({})",
             std::fs::read_to_string("/proc/sys/kernel/osrelease")
                 .unwrap_or_default()
@@ -333,12 +489,8 @@ mod linux {
             caps.seccomp,
             caps.user_namespaces,
             caps.user_namespaces_evidence
-        );
+        ));
         let required = required();
-        let mut report = Report {
-            failures: 0,
-            exercised: 0,
-        };
 
         for (wrapper, key, available, why) in [
             (
@@ -357,9 +509,11 @@ mod linux {
             if !available {
                 if required.iter().any(|r| r == key) {
                     report.failures += 1;
-                    println!("FAIL  {key}: required by OPAQUE_SANDBOX_E2E_REQUIRE but {why}");
+                    report.line(&format!(
+                        "FAIL  {key}: required by OPAQUE_SANDBOX_E2E_REQUIRE but {why}"
+                    ));
                 } else {
-                    println!("SKIP  {key}: {why}");
+                    report.line(&format!("SKIP  {key}: {why}"));
                 }
                 continue;
             }
@@ -389,16 +543,17 @@ mod linux {
         );
 
         if report.exercised == 0 {
-            println!("no sandbox strategy could be exercised on this host");
+            report.line("no sandbox strategy could be exercised on this host");
         }
-        if report.failures > 0 {
-            println!("linux_sandbox_e2e: {} check(s) FAILED", report.failures);
-            std::process::exit(1);
+        let (failures, exercised) = (report.failures, report.exercised);
+        if failures > 0 {
+            report.line(&format!("linux_sandbox_e2e: {failures} check(s) FAILED"));
+            return false;
         }
-        println!(
-            "linux_sandbox_e2e: all checks passed across {} strateg{}",
-            report.exercised,
-            if report.exercised == 1 { "y" } else { "ies" }
-        );
+        report.line(&format!(
+            "linux_sandbox_e2e: all checks passed across {exercised} strateg{}",
+            if exercised == 1 { "y" } else { "ies" }
+        ));
+        true
     }
 }
