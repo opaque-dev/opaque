@@ -66,6 +66,34 @@ Nested tables:
 
 Note: `secret_names` enforcement depends on `secret_ref_names`, which the daemon now derives server-side and fails closed on when a pattern is configured but the derived list is empty; see the [adversarial review](adversarial-security-review-2026-02-14.md) for the fix.
 
+### Top-level settings and `opaque policy check`
+
+Daemon settings (`approval_backend`, `data_dir`, `require_seal`,
+`enforce_agent_sessions`, ...) must appear above the first `[[rules]]` table.
+TOML has no way back to the top level once a table starts, so a line appended
+to the end of a config becomes a key of the last rule's `[rules.approval]` table
+and is ignored. `opaque policy check` parses the raw file and warns about every
+key in a rule table that no policy field reads:
+
+```text
+$ opaque policy check
+⚠  rules[6] ("allow-test-noop"): `approval_backend` is a daemon-level setting but sits inside [rules.approval], where it is ignored. TOML cannot return to the top level after a table: move the line above the first [[rules]] table.
+✔  policy OK: 7 rules loaded
+```
+
+Mistyped matcher keys load without error and enforce nothing, so they are
+reported the same way with the keys the table does accept:
+
+```text
+$ opaque policy check
+⚠  rules[0] ("allow-github-list-secrets"): unknown key `require` in [rules.workspace] is ignored. Known keys: remote_url_pattern, branch_pattern, require_clean.
+✔  policy OK: 1 rules loaded
+```
+
+The check still exits 0 in both cases: the config loads, and the warning names
+the line that does nothing. Only `[rules.client]` rejects unknown keys at load
+time. Generated preset headers repeat the placement rule.
+
 ### Approval Configuration
 
 `[rules.approval]` fields:

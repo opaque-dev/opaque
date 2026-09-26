@@ -93,6 +93,11 @@ Validate:
 ./target/release/opaque policy check
 ```
 
+Keep daemon settings such as `approval_backend` or `data_dir` above the first
+`[[rules]]` table. A key appended below the last rule belongs to that rule's
+table and does nothing; the check warns when that has happened (see
+[top-level settings](policy.md#top-level-settings-and-opaque-policy-check)).
+
 For the full config format, see [Policy](policy.md) and `examples/policy.toml`.
 
 ## Bitwarden Secrets Manager
@@ -145,16 +150,35 @@ See [Vault setup](vault.md) for details.
 
 For Claude Code, the MCP server is the recommended integration path:
 
-1. Add to your Claude Code MCP config:
+1. Register `opaque-mcp` with Claude Code. This writes the user-scope entry
+   to `~/.claude.json` and leaves every other key and server in that file
+   untouched:
+
+   ```sh
+   opaque connect claude
+   cat ~/.claude.json
+   ```
+
+   ```text
+   ✔  Registered opaque MCP server with Claude Code
+   ```
+
    ```json
    {
      "mcpServers": {
        "opaque": {
-         "command": "/path/to/opaque-mcp"
+         "args": [],
+         "command": "/opt/homebrew/bin/opaque-mcp",
+         "env": {}
        }
      }
    }
    ```
+
+   `command` is the first `opaque-mcp` on your `PATH`. Running the command a
+   second time prints `opaque MCP server is already configured in Claude Code`
+   and does not rewrite the file. For a project-scoped entry, write the same
+   `mcpServers` object to `.mcp.json` in the repository root instead.
 
 2. Start `opaqued` (or install it as a service: `opaque service install`)
 
