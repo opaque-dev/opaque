@@ -468,6 +468,21 @@ async fn adapter_signed_tool_daemon_effect_receipt_and_replay_survive_restart() 
             .any(|t| t["name"] == "opaque_mcp_tool_post_note")
     );
     assert!(!catalog.to_string().contains("unapproved_admin"));
+    // The fixture gateway serves invocation receipts, so the adapter lists both
+    // invocation tools beside the enrolled route; discovery says why.
+    let names: Vec<&str> = catalog["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    for name in ["opaque_mcp_invocation_get", "opaque_mcp_invocation_revoke"] {
+        assert!(names.contains(&name), "{names:?}");
+    }
+    assert_eq!(
+        daemon.call("mcp_catalog", json!({})).await["result"]["gateway"],
+        json!({"availability":"fixture_only"})
+    );
     assert_eq!(state.all.load(Ordering::SeqCst), 0);
     let id = uuid::Uuid::new_v4().to_string();
     let response = adapter.call("tools/call", adapter_args(&id)).await;

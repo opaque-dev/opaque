@@ -696,10 +696,46 @@ mod tests {
 
     #[tokio::test]
     async fn external_catalog_bounds_and_names_never_expand_the_admitted_tool_set() {
-        for catalog in [
-            json!({"tools":vec![json!({"name":"opaque_mcp_tool_test"});129]}),
-            json!({"tools":[{"name":"untrusted"},{"name":4},{"name":"opaque_mcp_tool_test","description":"test","inputSchema":{"type":"object"}}]}),
-            json!({"tools":null}),
+        let invocation_tools = ["opaque_mcp_invocation_get", "opaque_mcp_invocation_revoke"];
+        let enrolled = json!({"name":"opaque_mcp_tool_test","description":"test","inputSchema":{"type":"object"}});
+        for (catalog, expected) in [
+            (
+                json!({"tools":vec![json!({"name":"opaque_mcp_tool_test"});129],"gateway":{"availability":"enabled"}}),
+                vec![],
+            ),
+            (
+                json!({"tools":[{"name":"untrusted"},{"name":4},enrolled],"gateway":{"availability":"enabled"}}),
+                vec![
+                    "opaque_mcp_tool_test",
+                    "opaque_mcp_invocation_get",
+                    "opaque_mcp_invocation_revoke",
+                ],
+            ),
+            // A daemon through 0.5.0 answers without availability. It serves
+            // no gateway, so no invocation tool is advertised.
+            (json!({"tools":[]}), vec![]),
+            (
+                json!({"tools":[],"gateway":{"availability":"disabled"}}),
+                vec![],
+            ),
+            (
+                json!({"tools":[],"gateway":{"availability":"fixture_only"}}),
+                invocation_tools.to_vec(),
+            ),
+            // Every route hidden by policy still leaves owned receipts readable.
+            (
+                json!({"tools":[],"gateway":{"availability":"enabled"}}),
+                invocation_tools.to_vec(),
+            ),
+            (
+                json!({"tools":[],"gateway":{"availability":"unrecognized"}}),
+                vec![],
+            ),
+            (json!({"tools":[],"gateway":{"availability":true}}), vec![]),
+            (
+                json!({"tools":null,"gateway":{"availability":"enabled"}}),
+                vec![],
+            ),
         ] {
             let (directory, client, broker) =
                 scripted_broker(vec![("mcp_catalog", json!({"id":1,"result":catalog}))]);
@@ -714,18 +750,8 @@ mod tests {
                 .filter_map(|t| t["name"].as_str())
                 .filter(|n| n.starts_with("opaque_mcp_"))
                 .collect();
-            if catalog["tools"].as_array().is_some_and(|t| t.len() == 3) {
-                assert_eq!(
-                    external_names,
-                    vec![
-                        "opaque_mcp_tool_test",
-                        "opaque_mcp_invocation_get",
-                        "opaque_mcp_invocation_revoke"
-                    ]
-                );
-            } else {
-                assert!(external_names.is_empty());
-            }
+            assert_eq!(external_names, expected, "{catalog}");
+            assert_eq!(tools.len(), 22 + expected.len(), "{catalog}");
             assert_eq!(broker.await.unwrap().len(), 1);
             drop(directory);
         }
