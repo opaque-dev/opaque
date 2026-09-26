@@ -11,6 +11,7 @@ use futures_util::{FutureExt, StreamExt};
 #[cfg(test)]
 use opaque_mcp::protocol::JsonRpcRequest;
 use opaque_mcp::protocol::{McpLines, parse_request};
+use opaque_mcp::validation;
 use serde::Serialize;
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
@@ -190,14 +191,13 @@ async fn handle_tools_call(
     else {
         return JsonRpcResponse::error(id, INVALID_PARAMS, "unknown tool");
     };
-    if !validator.is_valid(&arguments) {
-        // Validation errors can quote supplied values. Keep those out of logs
-        // and model-facing responses; the published schema describes the contract.
-        return JsonRpcResponse::error(
-            id,
-            INVALID_PARAMS,
-            "tool arguments do not match the input schema",
-        );
+    // The message names the failing field path and constraint from the
+    // published schema so the caller can correct the call in one step. It
+    // never quotes supplied values or caller-chosen property names.
+    if let Some(message) =
+        validation::describe_failures(&tool_def.input_schema, validator, &arguments)
+    {
+        return JsonRpcResponse::error(id, INVALID_PARAMS, message);
     }
     // Blocking lookups hold a separate bounded permit even if their caller is
     // cancelled, since aborting an async task cannot stop a blocking syscall.
@@ -769,7 +769,12 @@ mod tests {
             (
                 json!({"tools":[{"name":"opaque_mcp_tool_note","route":"note","inputSchema":{"type":"object","required":["id"],"additionalProperties":false,"properties":{"id":{"type":"integer"}}}}]}),
                 json!({"id":"not an integer"}),
-                "tool arguments do not match the input schema",
+                "tool arguments do not match the input schema: \"/id\" must be of type integer",
+            ),
+            (
+                json!({"tools":[{"name":"opaque_mcp_tool_note","route":"note","inputSchema":{"type":"object","required":["id"],"additionalProperties":false,"properties":{"id":{"type":"integer"}}}}]}),
+                json!({"id":1,"private":"synthetic-private-argument"}),
+                "tool arguments do not match the input schema: \"/\" has 1 unexpected field; allowed fields: id",
             ),
             (
                 json!({"tools":[{"name":"opaque_mcp_tool_note","route":"note","inputSchema":{"type":"unsupported"}}]}),
@@ -1000,8 +1005,64 @@ mod tests {
         assert!(rejected.result.is_none());
         assert_eq!(
             rejected.error.unwrap().message,
-            "tool arguments do not match the input schema"
+            "tool arguments do not match the input schema: \"/task_id\" must be of type string"
         );
+    }
+
+    #[tokio::test]
+    async fn schema_rejections_name_the_field_and_constraint_without_quoting_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = DaemonClient::new(Some(directory.path().join("absent")));
+        let secret = "synthetic-private-value-91c2";
+        for (tool, arguments, expected) in [
+            (
+                "opaque_secrets_status",
+                json!({}),
+                "missing required field \"/profile\"",
+            ),
+            (
+                "opaque_secrets_status",
+                json!({"profile":42}),
+                "\"/profile\" must be of type string",
+            ),
+            (
+                "opaque_task_list",
+                json!({"cursor":secret,"approved":true}),
+                "\"/\" has 1 unexpected field; allowed fields: cursor",
+            ),
+            (
+                "opaque_task_plan_ssh",
+                json!({"title":secret,"expires_in_secs":0}),
+                "\"/expires_in_secs\" must be at least 1",
+            ),
+            (
+                "opaque_task_plan",
+                json!({"manifest":{"schema_version":1,"title":"t","expires_in_secs":60,"actions":[{"repo":"o/r","secret_name":"lower","value_ref":secret}]}}),
+                "\"/manifest/actions/0/secret_name\" must match the pattern ^[A-Z_][A-Z0-9_]*$",
+            ),
+            (
+                "opaque_github_set_org_secret",
+                json!({"org":"o","secret_name":"S","value_ref":secret,"visibility":secret}),
+                "\"/visibility\" must be one of \"all\", \"private\", \"selected\"",
+            ),
+        ] {
+            let response = handle_tools_call(
+                Some(json!(tool)),
+                &json!({"name":tool,"arguments":arguments}),
+                &client,
+            )
+            .await;
+            assert!(response.result.is_none(), "{tool}");
+            let error = response.error.unwrap();
+            assert_eq!(error.code, INVALID_PARAMS);
+            assert_eq!(
+                error.message,
+                format!("tool arguments do not match the input schema: {expected}"),
+                "{tool}"
+            );
+            assert!(!error.message.contains(secret), "{tool}: {}", error.message);
+            assert!(error.data.is_none());
+        }
     }
 
     #[tokio::test]

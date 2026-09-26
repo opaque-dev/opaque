@@ -87,14 +87,15 @@ pub async fn call(
         let Some(tool) = tool else {
             return JsonRpcResponse::error(id, INVALID_PARAMS, "unknown tool");
         };
-        let valid =
-            jsonschema::validator_for(&tool["inputSchema"]).is_ok_and(|v| v.is_valid(&args));
-        if !valid {
-            return JsonRpcResponse::error(
-                id,
-                INVALID_PARAMS,
-                "tool arguments do not match the input schema",
-            );
+        // A catalog schema the adapter cannot compile admits nothing and is
+        // not described, since the failure is the schema, not the arguments.
+        let Ok(validator) = jsonschema::validator_for(&tool["inputSchema"]) else {
+            return JsonRpcResponse::error(id, INVALID_PARAMS, validation::SCHEMA_MISMATCH);
+        };
+        if let Some(message) =
+            validation::describe_failures(&tool["inputSchema"], &validator, &args)
+        {
+            return JsonRpcResponse::error(id, INVALID_PARAMS, message);
         }
         let mut params = args;
         params["route"] = json!(alias);

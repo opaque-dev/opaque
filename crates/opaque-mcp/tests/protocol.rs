@@ -427,6 +427,67 @@ async fn malformed_tool_calls_return_errors_and_the_real_process_keeps_serving()
 }
 
 #[tokio::test]
+async fn schema_validation_errors_name_the_missing_field_over_stdio() {
+    // The first-session mistake from the quickstart: a required field omitted.
+    // No daemon exists; validation happens before any IPC.
+    let directory = tempfile::tempdir().unwrap();
+    let mut server = Server::start(directory.path());
+    server
+        .send(json!({"jsonrpc":"2.0","id":"init","method":"initialize"}))
+        .await;
+    assert_eq!(
+        server.receive().await["result"]["serverInfo"]["name"],
+        "opaque-mcp"
+    );
+    let secret = "synthetic-private-value-4e1d";
+    for (id, tool, arguments, expected) in [
+        (
+            "empty",
+            "opaque_secrets_status",
+            json!({}),
+            "missing required field \"/profile\"",
+        ),
+        (
+            "wrong-type",
+            "opaque_task_run",
+            json!({"task_id":null}),
+            "\"/task_id\" must be of type string",
+        ),
+        (
+            "extra-field",
+            "opaque_task_list",
+            json!({"unexpected":secret}),
+            "\"/\" has 1 unexpected field; allowed fields: cursor",
+        ),
+        (
+            "two-failures",
+            "opaque_sandbox_exec",
+            json!({"command":secret}),
+            "missing required field \"/profile\"; \"/command\" must be of type array",
+        ),
+    ] {
+        server
+            .send(
+                json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{
+                "name":tool,"arguments":arguments}}),
+            )
+            .await;
+        let response = server.receive().await;
+        assert_eq!(
+            response,
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,
+                "message":format!("tool arguments do not match the input schema: {expected}")}}),
+        );
+        assert!(!response.to_string().contains(secret));
+    }
+    server
+        .send(json!({"jsonrpc":"2.0","id":"alive","method":"ping"}))
+        .await;
+    assert_eq!(server.receive().await["result"], json!({}));
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn full_tool_capacity_keeps_control_responsive_and_cancellation_closes_ipc() {
     let (directory, listener) = daemon_fixture();
     let mut server = Server::start(directory.path());
