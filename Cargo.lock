@@ -2373,7 +2373,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 name = "opaque"
 version = "0.5.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "clap",
  "clap_complete",
@@ -2405,7 +2405,7 @@ name = "opaque-approval"
 version = "0.5.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "ed25519-dalek",
  "futures-util",
@@ -2473,7 +2473,7 @@ dependencies = [
 name = "opaque-bounded-work"
 version = "0.5.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "ed25519-dalek",
  "jsonwebtoken",
  "libc",
@@ -2501,7 +2501,7 @@ dependencies = [
 name = "opaque-core"
 version = "0.5.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "ed25519-dalek",
  "getrandom 0.4.3",
  "glob-match",
@@ -2538,7 +2538,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 name = "opaque-federation-runtime"
 version = "0.5.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "ed25519-dalek",
  "libc",
  "opaque-core",
@@ -2603,7 +2603,7 @@ version = "0.5.0"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "crypto_box",
  "jsonwebtoken",
@@ -2647,7 +2647,7 @@ version = "0.5.0"
 dependencies = [
  "aws-lc-rs",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "futures-util",
  "getrandom 0.4.3",
@@ -2717,7 +2717,7 @@ name = "opaqued"
 version = "0.5.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "crypto_box",
