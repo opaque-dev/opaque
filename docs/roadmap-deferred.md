@@ -3,6 +3,15 @@
 Out of scope for the current release, not "coming soon": each needs its own
 threat model, evidence, or customer pull before it's worth building.
 
+## Developer password-broker expansion
+
+New password-filling workflows and developer password-broker onboarding are
+deprioritized. Product work focuses on bounded authority, trusted human review,
+and inspectable execution evidence. Existing credential integrations remain
+supported enforcement dependencies; custody does not by itself authorize work.
+See the [scoped authority foundation](scoped-authority.md) for implemented library
+boundaries and the integration work still required.
+
 ## iOS second-device approvals (Face ID)
 
 Design only; see [mobile approvals](mobile-approvals.md). No iOS app ships.

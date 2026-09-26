@@ -4,11 +4,11 @@
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-orange.svg)](LICENSE)
 ![Release](https://img.shields.io/github/v/release/opaque-dev/opaque)
 
-**Approve the work. Keep secrets secret.**
+**Give agents bounded authority.**
 
-Give coding agents a reviewed task with a fixed scope and expiry. Opaque is a
-local broker for Claude Code, Codex, and other MCP clients: it checks authority
-before dispatch and keeps credentials with the broker.
+Give agents reviewed work with a fixed scope and expiry. Opaque checks current
+authority before dispatch and records the observed result. The local broker
+supports CLI and MCP clients and keeps execution credentials in broker custody.
 
 ## Try one data read
 

@@ -1,6 +1,6 @@
 # Architecture
 
-Opaque is a credential broker for agent-driven work. The agent requests a permitted
+Opaque is a local authority broker for agent-driven work. The agent requests a permitted
 operation; the broker checks authority, obtains required approval, uses the
 credential and returns a constrained result. A useful first evaluation is one
 repository operation, such as publishing a GitHub Actions secret, with a known
@@ -10,6 +10,10 @@ This page describes source at
 [83e7924](https://github.com/opaque-dev/opaque/tree/83e7924960f809e87379a54996317dbe1422fe70).
 Source implementation does not establish availability in an installed release.
 Check the selected version and the capability-specific qualification requirements.
+
+The [scoped authority foundation](scoped-authority.md) is a separate, unreleased
+library path for finite delegated work. It is not wired into the execution paths
+described below.
 
 <a id="1-design-goals"></a>
 <a id="3-crates"></a>

@@ -30,6 +30,7 @@
 
 pub mod inference;
 pub mod resource_authority;
+pub mod scope_store;
 pub mod ssh;
 pub mod task_api;
 pub mod task_facade;
