@@ -6,7 +6,7 @@
 # Risk: None. test.noop does no real work and touches no secrets.
 #
 # Usage:
-#   opaque policy preset apply safe-demo
+#   opaque policy preset safe-demo
 
 [[rules]]
 name = "allow-test-noop"

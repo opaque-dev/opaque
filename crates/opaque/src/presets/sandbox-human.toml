@@ -9,7 +9,7 @@
 # byte counts), and approval is required every time.
 #
 # Usage:
-#   opaque policy preset apply sandbox-human
+#   opaque policy preset sandbox-human
 
 # ---- Sandbox rules ----
 
