@@ -1,7 +1,7 @@
 //! Opt-in typed support workflow. Authorization stays in this broker: a paired
 //! reviewer signs issuance or an exact prepared action; immutable startup policy,
 //! current identity and enrollment are fenced through durable dispatch claims.
-mod connector;
+pub(crate) mod connector;
 use crate::identity::IdentityRuntime;
 use connector::{Connector, Status};
 use opaque_approval::{
@@ -25,6 +25,10 @@ use std::{path::Path, sync::Arc};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Set only by the sealed manifest loader. Excluding None preserves legacy
+    /// scope_workflow policy digests exactly; agents cannot deserialize this.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub authority_policy: Option<opaque_core::authority_policy::CompiledPolicy>,
     pub profile: connector::Profile,
     pub reviewer_id: String,
     pub reviewer_public_key: String,
@@ -596,7 +600,8 @@ impl Runtime {
                         "required_role":document.authority.required_role,"policy_digest":document.authority.policy_digest,"receipt_digest":round.receipt.map(|r|r.digest()).transpose().map_err(|e|e.to_string())?}));
                 }
             }
-            let value=json!({"schema_version":1,"owner":self.owner,"observed_at":now_unix(),"ledger":ledger,"reviews_total":total,"reviews":reviews});
+            let value=json!({"schema_version":1,"owner":self.owner,"observed_at":now_unix(),"ledger":ledger,"reviews_total":total,"reviews":reviews,
+                "authority_policy":self.config.authority_policy.as_ref().map(|p|json!({"digest":p.digest,"identity":p.identity}))});
             if serde_json::to_vec(&value).map_err(|_|"snapshot encoding failed")?.len()>opaque_core::MAX_FRAME_LENGTH-4096{return Err("scope snapshot exceeds frame limit; narrower pagination required".into());}
             result=Some(value);Ok(())
         })?;

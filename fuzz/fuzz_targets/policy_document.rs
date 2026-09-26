@@ -7,6 +7,10 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > opaque_core::MAX_FRAME_LENGTH {
         return;
     }
+    if let Ok(compiled) = opaque_core::authority_policy::compile(data) {
+        let canonical = serde_json::to_vec(&compiled.policy).unwrap();
+        assert_eq!(opaque_core::authority_policy::compile(&canonical).unwrap(), compiled);
+    }
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };

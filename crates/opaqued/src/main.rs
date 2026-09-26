@@ -48,6 +48,7 @@ mod agent_session_contract_tests;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod approver_rpc_tests;
+mod authority_policy;
 mod connection;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -105,6 +106,9 @@ use opaque_core::operation_handler::OperationHandler;
 /// Daemon configuration loaded from `~/.opaque/config.toml`.
 #[derive(Debug, Clone, Deserialize, Default)]
 struct DaemonConfig {
+    /// Operator-pinned AuthorityPolicy; mutually exclusive with scope_workflow.
+    #[serde(default)]
+    authority_policy: Option<authority_policy::Config>,
     /// Opt-in fixed support-case workflow; requires sealed isolated identity custody.
     #[serde(default)]
     scope_workflow: Option<scope_runtime::Config>,
@@ -1942,6 +1946,11 @@ fn local_auth_preflight(
 }
 
 async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> {
+    if config.scope_workflow.is_some() && config.authority_policy.is_some() {
+        return Err(std::io::Error::other(
+            "scope_workflow and authority_policy cannot coexist",
+        ));
+    }
     if config.legacy_scim.is_some() {
         return Err(std::io::Error::other(
             "legacy [scim] configuration requires explicit migration to the managed lifecycle adapter; refusing unmanaged startup",
@@ -2574,6 +2583,7 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
         || !config.workstation_approvers.is_empty()
         || config.remote_approvals.is_some()
         || config.scope_workflow.is_some()
+        || config.authority_policy.is_some()
     {
         let state_dir = audit_db_path
             .parent()
@@ -2683,7 +2693,7 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
             .transpose()
             .map_err(std::io::Error::other)?;
 
-        if let Some(workflow_config) = config.scope_workflow.clone() {
+        if config.scope_workflow.is_some() || config.authority_policy.is_some() {
             if backend != ApprovalBackendKind::Native
                 || !config.require_seal
                 || !td.enforce
@@ -2702,6 +2712,13 @@ async fn run(config: DaemonConfig, config_path: PathBuf) -> std::io::Result<()> 
             let runtime = identity_runtime
                 .clone()
                 .ok_or_else(|| std::io::Error::other("scope workflow requires identity"))?;
+            let workflow_config = authority_policy::resolve(
+                config.scope_workflow.clone(),
+                config.authority_policy.as_ref(),
+                boundary.binding(),
+            )
+            .map_err(std::io::Error::other)?
+            .ok_or_else(|| std::io::Error::other("scope workflow unavailable"))?;
             scope_workflow = Some(Arc::new(
                 scope_runtime::Runtime::open(
                     workflow_config,
