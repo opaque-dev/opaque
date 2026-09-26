@@ -407,27 +407,14 @@ pub fn detect_ai_tools(env: &dyn Environment) -> Vec<DetectedAiTool> {
 /// Generate the MCP server JSON configuration for a given AI tool.
 ///
 /// Returns the JSON string that should be merged into the tool's config file.
+/// `opaque-mcp` takes no arguments: it always serves MCP over stdio.
 pub fn generate_mcp_config(tool: &DetectedAiTool, opaque_mcp_path: &Path) -> String {
     let path_str = opaque_mcp_path.to_string_lossy();
 
     match tool.kind {
-        AiToolKind::ClaudeCode => serde_json::json!({
+        AiToolKind::ClaudeCode | AiToolKind::Cursor => serde_json::json!({
             "mcpServers": {
-                "opaque": {
-                    "command": path_str,
-                    "args": ["--stdio"],
-                    "env": {}
-                }
-            }
-        })
-        .to_string(),
-        AiToolKind::Cursor => serde_json::json!({
-            "mcpServers": {
-                "opaque": {
-                    "command": path_str,
-                    "args": ["--stdio"],
-                    "env": {}
-                }
+                "opaque": new_json_mcp_server_entry(&path_str)
             }
         })
         .to_string(),
@@ -438,12 +425,150 @@ pub fn generate_mcp_config(tool: &DetectedAiTool, opaque_mcp_path: &Path) -> Str
 }
 
 /// Return the config file path for MCP registration for the given AI tool.
+///
+/// Claude Code reads user-scope `mcpServers` from `~/.claude.json`, not from
+/// `~/.claude/settings.json` (which holds settings and is never consulted for
+/// MCP servers). The detected `~/.claude` directory is only the install marker.
 pub fn mcp_config_path(tool: &DetectedAiTool) -> PathBuf {
     match tool.kind {
-        AiToolKind::ClaudeCode => tool.config_dir.join("settings.json"),
+        AiToolKind::ClaudeCode => {
+            claude_code_mcp_config_path(tool.config_dir.parent().unwrap_or_else(|| Path::new(".")))
+        }
         AiToolKind::Cursor => tool.config_dir.join("mcp.json"),
         AiToolKind::Codex => tool.config_dir.join("config.toml"),
     }
+}
+
+/// Claude Code's user-scope MCP configuration file (`~/.claude.json`).
+pub fn claude_code_mcp_config_path(home: &Path) -> PathBuf {
+    home.join(".claude.json")
+}
+
+/// Argument written by `opaque connect` in releases up to 0.4.0. The shipped
+/// `opaque-mcp` exited with "unknown argument: --stdio" when a client passed
+/// it, so it is removed whenever an existing entry is rewritten.
+const LEGACY_STDIO_ARG: &str = "--stdio";
+
+/// Outcome of merging the `opaque` server entry into a JSON MCP config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonMcpUpsert {
+    /// No `opaque` entry existed; one was added.
+    Created,
+    /// An `opaque` entry existed and was rewritten (new command path, or the
+    /// legacy `--stdio` argument was removed).
+    Updated,
+    /// An `opaque` entry already pointed at this binary without the legacy
+    /// argument. Nothing was changed and nothing is written.
+    Unchanged,
+}
+
+fn new_json_mcp_server_entry(command: &str) -> serde_json::Value {
+    serde_json::json!({
+        "command": command,
+        "args": [],
+        "env": {}
+    })
+}
+
+/// Merge the `opaque` server entry into a client's `mcpServers` JSON object.
+///
+/// Every other top-level key and every other server entry is preserved (the
+/// same file holds unrelated client state, for example Claude Code's whole
+/// `~/.claude.json`). An existing `opaque` entry keeps its `env` and any
+/// custom `args`; only `command` and the legacy `--stdio` argument change.
+pub fn upsert_json_mcp_server(
+    config: &mut serde_json::Value,
+    opaque_mcp: &Path,
+) -> Result<JsonMcpUpsert, String> {
+    let path_str = opaque_mcp.to_string_lossy().to_string();
+
+    let servers = config
+        .as_object_mut()
+        .ok_or("config is not a JSON object")?
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or("mcpServers is not a JSON object")?;
+
+    let existing_is_object = servers.get("opaque").is_some_and(|v| v.is_object());
+    if !existing_is_object {
+        let replaced = servers
+            .insert("opaque".into(), new_json_mcp_server_entry(&path_str))
+            .is_some();
+        return Ok(if replaced {
+            JsonMcpUpsert::Updated
+        } else {
+            JsonMcpUpsert::Created
+        });
+    }
+
+    let entry = servers
+        .get_mut("opaque")
+        .and_then(|v| v.as_object_mut())
+        .expect("checked to be an object above");
+    let mut changed = false;
+
+    if entry.get("command").and_then(|v| v.as_str()) != Some(path_str.as_str()) {
+        entry.insert("command".into(), serde_json::Value::String(path_str));
+        changed = true;
+    }
+
+    match entry.get_mut("args") {
+        Some(serde_json::Value::Array(args)) => {
+            let before = args.len();
+            args.retain(|arg| arg.as_str() != Some(LEGACY_STDIO_ARG));
+            if args.len() != before {
+                changed = true;
+            }
+        }
+        // A non-array `args` cannot be spawned by any client; reset it.
+        Some(_) => {
+            entry.insert("args".into(), serde_json::json!([]));
+            changed = true;
+        }
+        // Absent `args` is valid for every supported client; leave it alone.
+        None => {}
+    }
+
+    Ok(if changed {
+        JsonMcpUpsert::Updated
+    } else {
+        JsonMcpUpsert::Unchanged
+    })
+}
+
+/// Read a JSON MCP config file, merge the `opaque` entry, and write it back
+/// only when something changed. Creates the file (and its parent directory)
+/// when it does not exist yet.
+pub fn upsert_json_mcp_config_file(
+    config_file: &Path,
+    opaque_mcp: &Path,
+) -> Result<JsonMcpUpsert, String> {
+    if let Some(parent) = config_file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+
+    let mut config: serde_json::Value = if config_file.exists() {
+        let content = std::fs::read_to_string(config_file)
+            .map_err(|e| format!("cannot read {}: {e}", config_file.display()))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("cannot parse {}: {e}", config_file.display()))?
+    } else {
+        serde_json::json!({})
+    };
+
+    let outcome = upsert_json_mcp_server(&mut config, opaque_mcp)?;
+    if outcome == JsonMcpUpsert::Unchanged {
+        return Ok(outcome);
+    }
+
+    let formatted = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("cannot serialize config: {e}"))?;
+    std::fs::write(config_file, formatted)
+        .map_err(|e| format!("cannot write {}: {e}", config_file.display()))?;
+
+    Ok(outcome)
 }
 
 /// Return the Codex config file path (~/.codex/config.toml).
@@ -1064,41 +1189,7 @@ fn register_mcp(tool: &DetectedAiTool, opaque_mcp_path: &Path) -> Result<(), Str
     }
 
     // JSON-based registration (Claude Code, Cursor).
-    let mut config: serde_json::Value = if config_file.exists() {
-        let content = std::fs::read_to_string(&config_file)
-            .map_err(|e| format!("cannot read {}: {e}", config_file.display()))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("cannot parse {}: {e}", config_file.display()))?
-    } else {
-        serde_json::json!({})
-    };
-
-    // Ensure mcpServers object exists.
-    let servers = config
-        .as_object_mut()
-        .ok_or("config is not a JSON object")?
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-
-    let path_str = opaque_mcp_path.to_string_lossy().to_string();
-    servers
-        .as_object_mut()
-        .ok_or("mcpServers is not a JSON object")?
-        .insert(
-            "opaque".to_string(),
-            serde_json::json!({
-                "command": path_str,
-                "args": ["--stdio"],
-                "env": {}
-            }),
-        );
-
-    let formatted = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("cannot serialize config: {e}"))?;
-    std::fs::write(&config_file, formatted)
-        .map_err(|e| format!("cannot write {}: {e}", config_file.display()))?;
-
-    Ok(())
+    upsert_json_mcp_config_file(&config_file, opaque_mcp_path).map(|_| ())
 }
 
 /// Register the opaque MCP server in a Codex TOML config file.
@@ -1703,7 +1794,11 @@ mod tests {
         assert!(parsed.get("mcpServers").is_some());
         let opaque = &parsed["mcpServers"]["opaque"];
         assert_eq!(opaque["command"], "/usr/local/bin/opaque-mcp");
-        assert_eq!(opaque["args"][0], "--stdio");
+        assert_eq!(
+            opaque["args"],
+            serde_json::json!([]),
+            "opaque-mcp takes no arguments; --stdio made it exit with code 2"
+        );
     }
 
     #[test]
@@ -1719,7 +1814,7 @@ mod tests {
         assert!(parsed.get("mcpServers").is_some());
         let opaque = &parsed["mcpServers"]["opaque"];
         assert_eq!(opaque["command"], "/usr/local/bin/opaque-mcp");
-        assert_eq!(opaque["args"][0], "--stdio");
+        assert_eq!(opaque["args"], serde_json::json!([]));
     }
 
     #[test]
@@ -1745,9 +1840,11 @@ mod tests {
             config_dir: PathBuf::from("/home/user/.claude"),
             kind: AiToolKind::ClaudeCode,
         };
+        // Claude Code reads user-scope mcpServers from ~/.claude.json;
+        // ~/.claude/settings.json is never consulted for MCP servers.
         assert_eq!(
             mcp_config_path(&tool),
-            PathBuf::from("/home/user/.claude/settings.json")
+            PathBuf::from("/home/user/.claude.json")
         );
     }
 
@@ -1838,6 +1935,121 @@ mod tests {
         // Both servers should be present.
         assert!(content["mcpServers"]["other"].is_object());
         assert!(content["mcpServers"]["opaque"].is_object());
+    }
+
+    /// A client config file holds far more than MCP servers (Claude Code's
+    /// ~/.claude.json carries dozens of unrelated keys). Every one of them,
+    /// and every other server entry, must survive registration with its
+    /// value intact.
+    #[test]
+    fn upsert_preserves_unrelated_keys_and_other_servers() {
+        let mut config = serde_json::json!({
+            "numStartups": 42,
+            "theme": "dark",
+            "projects": {"/home/user/opaque": {"allowedTools": ["Bash"], "hasTrustDialogAccepted": true}},
+            "mcpServers": {
+                "other": {"command": "/usr/bin/other", "args": ["--flag"], "env": {"TOKEN_REF": "x"}}
+            }
+        });
+        let before = config.clone();
+
+        let outcome = upsert_json_mcp_server(&mut config, Path::new("/usr/local/bin/opaque-mcp"));
+        assert_eq!(outcome, Ok(JsonMcpUpsert::Created));
+
+        assert_eq!(config["numStartups"], before["numStartups"]);
+        assert_eq!(config["theme"], before["theme"]);
+        assert_eq!(config["projects"], before["projects"]);
+        assert_eq!(config["mcpServers"]["other"], before["mcpServers"]["other"]);
+        assert_eq!(
+            config["mcpServers"]["opaque"],
+            serde_json::json!({"command": "/usr/local/bin/opaque-mcp", "args": [], "env": {}})
+        );
+    }
+
+    /// Releases up to 0.4.0 wrote `args: ["--stdio"]`, which opaque-mcp
+    /// rejected. Re-running connect must repair that argument while keeping
+    /// the user's own env and any other custom args.
+    #[test]
+    fn upsert_repairs_legacy_stdio_arg_and_keeps_custom_fields() {
+        let mut config = serde_json::json!({
+            "mcpServers": {
+                "opaque": {
+                    "command": "/usr/local/bin/opaque-mcp",
+                    "args": ["--stdio", "--custom"],
+                    "env": {"RUST_LOG": "debug"}
+                }
+            }
+        });
+
+        let outcome = upsert_json_mcp_server(&mut config, Path::new("/usr/local/bin/opaque-mcp"));
+        assert_eq!(outcome, Ok(JsonMcpUpsert::Updated));
+        let opaque = &config["mcpServers"]["opaque"];
+        assert_eq!(opaque["args"], serde_json::json!(["--custom"]));
+        assert_eq!(opaque["env"], serde_json::json!({"RUST_LOG": "debug"}));
+        assert_eq!(opaque["command"], "/usr/local/bin/opaque-mcp");
+    }
+
+    #[test]
+    fn upsert_updates_command_path_only() {
+        let mut config = serde_json::json!({
+            "mcpServers": {"opaque": {"command": "/old/opaque-mcp", "env": {"A": "b"}}}
+        });
+        let outcome = upsert_json_mcp_server(&mut config, Path::new("/new/opaque-mcp"));
+        assert_eq!(outcome, Ok(JsonMcpUpsert::Updated));
+        let opaque = &config["mcpServers"]["opaque"];
+        assert_eq!(opaque["command"], "/new/opaque-mcp");
+        assert_eq!(opaque["env"], serde_json::json!({"A": "b"}));
+        assert!(opaque.get("args").is_none(), "absent args stay absent");
+    }
+
+    #[test]
+    fn upsert_replaces_malformed_opaque_entry() {
+        let mut config = serde_json::json!({"mcpServers": {"opaque": "not-an-object"}});
+        let outcome = upsert_json_mcp_server(&mut config, Path::new("/usr/local/bin/opaque-mcp"));
+        assert_eq!(outcome, Ok(JsonMcpUpsert::Updated));
+        assert_eq!(
+            config["mcpServers"]["opaque"]["command"],
+            "/usr/local/bin/opaque-mcp"
+        );
+        assert!(upsert_json_mcp_server(&mut serde_json::json!([]), Path::new("/x")).is_err());
+    }
+
+    /// A second connect against an already-correct file changes nothing and
+    /// does not rewrite the file.
+    #[test]
+    fn upsert_file_is_idempotent_and_skips_write_when_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("nested").join(".claude.json");
+        let mcp = Path::new("/usr/local/bin/opaque-mcp");
+
+        assert_eq!(
+            upsert_json_mcp_config_file(&config_file, mcp),
+            Ok(JsonMcpUpsert::Created)
+        );
+        let first = std::fs::read(&config_file).unwrap();
+        let first_mtime = std::fs::metadata(&config_file).unwrap().modified().unwrap();
+
+        // Make any rewrite observable regardless of filesystem timestamp granularity.
+        let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(&config_file)
+            .unwrap()
+            .set_modified(stale)
+            .unwrap();
+        let stale_mtime = std::fs::metadata(&config_file).unwrap().modified().unwrap();
+        assert!(stale_mtime < first_mtime);
+
+        assert_eq!(
+            upsert_json_mcp_config_file(&config_file, mcp),
+            Ok(JsonMcpUpsert::Unchanged)
+        );
+        assert_eq!(std::fs::read(&config_file).unwrap(), first);
+        assert_eq!(
+            std::fs::metadata(&config_file).unwrap().modified().unwrap(),
+            stale_mtime,
+            "unchanged registration must not rewrite the file"
+        );
     }
 
     // =======================================================================
