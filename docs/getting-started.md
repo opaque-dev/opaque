@@ -222,7 +222,40 @@ Then wrapped agent clients must present `OPAQUE_SESSION_TOKEN` in the daemon han
 ./target/release/opaque exec --profile dev -- echo "hello from sandbox"
 ```
 
-`sandbox.exec` currently captures and returns stdout/stderr (and the CLI prints it). Treat this as sensitive output: avoid commands that print secrets, and do not allow it for agent clients by default.
+```text
+  output withheld (stdout: 19 bytes, stderr: 0 bytes)
+ok  Sandbox exec succeeded (0ms)
+```
+
+The caller gets the exit code, the duration and the output byte counts. The
+output content stays with the daemon: the command runs with the profile's
+secrets in its environment, so anything it prints could be a secret. The two
+audit events for the run name the containment that was used:
+
+```text
+sandbox.created    profile=dev argument_count=2 sandbox=bubblewrap+landlock+seccomp
+sandbox.completed  profile=dev exit_code=0 sandbox=bubblewrap+landlock+seccomp
+```
+
+On Linux the daemon probes the host at startup and before every exec, then
+picks the strongest strategy the host supports and logs it:
+
+```text
+INFO opaque_sandbox::linux: linux sandbox capabilities detected bubblewrap=true bubblewrap_evidence=ok landlock=true landlock_evidence=lsm=securityfs-unreadable abi=v8 seccomp=true user_namespaces=true user_namespaces_evidence=ok
+INFO opaque_sandbox::linux: linux sandbox strategy selected for sandbox.exec strategy=bubblewrap+landlock+seccomp
+```
+
+Either `bwrap` (the `bubblewrap` package) or unprivileged user namespaces for
+`unshare` must work on the host; otherwise every exec is refused with
+`no sandbox strategy available` and nothing runs. The strategy names,
+distribution notes and container requirements are in the
+[deployment guide](deployment.md#sandbox-prerequisites). macOS uses Seatbelt
+(`sandbox=seatbelt`). A profile with `sandbox = false` skips the platform
+sandbox and is audited as `sandbox=none` (environment sanitization only).
+
+The outputs above come from a Debian 12 container on a 7.0.12 kernel with
+bubblewrap 0.8.0; `lsm=securityfs-unreadable` is what containers without a
+securityfs mount report.
 
 ### GitHub Secrets
 
