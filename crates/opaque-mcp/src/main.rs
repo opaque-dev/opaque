@@ -97,24 +97,45 @@ fn tool_definitions() -> &'static [(tools::ToolDef, jsonschema::Validator)] {
     })
 }
 
-fn maybe_handle_cli_flag() -> bool {
-    let mut args = std::env::args().skip(1);
-    let Some(arg) = args.next() else {
-        return false;
-    };
+/// What the command line asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    /// Serve MCP over stdio (the only transport). MCP clients normally spawn
+    /// the server with no arguments; `--stdio` is accepted because some
+    /// client configurations, including those written by `opaque connect` up
+    /// to release 0.4.0, pass it as a transport selector.
+    Serve,
+    Version,
+    Help,
+    Unknown(String),
+}
 
-    match arg.as_str() {
-        "-V" | "--version" => {
+fn cli_action(args: impl IntoIterator<Item = String>) -> CliAction {
+    for arg in args {
+        match arg.as_str() {
+            "--stdio" => continue,
+            "-V" | "--version" => return CliAction::Version,
+            "-h" | "--help" => return CliAction::Help,
+            _ => return CliAction::Unknown(arg),
+        }
+    }
+    CliAction::Serve
+}
+
+fn maybe_handle_cli_flag() -> bool {
+    match cli_action(std::env::args().skip(1)) {
+        CliAction::Serve => false,
+        CliAction::Version => {
             println!("opaque-mcp {}", version_string());
             true
         }
-        "-h" | "--help" => {
+        CliAction::Help => {
             println!("opaque-mcp {}", version_string());
             println!("Usage: opaque-mcp [--version]");
-            println!("Runs as an MCP server over stdio.");
+            println!("Runs as an MCP server over stdio; --stdio is accepted and changes nothing.");
             true
         }
-        _ => {
+        CliAction::Unknown(arg) => {
             eprintln!("unknown argument: {arg}");
             eprintln!("Usage: opaque-mcp [--version]");
             std::process::exit(2);
@@ -1024,6 +1045,27 @@ mod tests {
         assert_eq!(result, Err("local lookup timed out"));
         // Release the actual worker; a timeout does not cancel its syscall.
         release.send(()).unwrap();
+    }
+
+    /// `--stdio` names the only transport there is, so it must start the
+    /// server exactly like an empty command line. Anything else still fails
+    /// closed so a mistyped client configuration is visible.
+    #[test]
+    fn stdio_flag_serves_and_unknown_arguments_are_still_rejected() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(cli_action(args(&[])), CliAction::Serve);
+        assert_eq!(cli_action(args(&["--stdio"])), CliAction::Serve);
+        assert_eq!(cli_action(args(&["--version"])), CliAction::Version);
+        assert_eq!(cli_action(args(&["-V"])), CliAction::Version);
+        assert_eq!(cli_action(args(&["--stdio", "--help"])), CliAction::Help);
+        assert_eq!(
+            cli_action(args(&["--stdio", "--bogus"])),
+            CliAction::Unknown("--bogus".into())
+        );
+        assert_eq!(
+            cli_action(args(&["--socket", "/x"])),
+            CliAction::Unknown("--socket".into())
+        );
     }
 
     #[test]

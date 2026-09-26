@@ -7088,84 +7088,35 @@ fn connect_tool_at(opaque_mcp: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Connect opaque MCP to Claude Code (~/.claude/settings.json).
+/// Connect opaque MCP to Claude Code.
+///
+/// Claude Code reads user-scope `mcpServers` from `~/.claude.json`. Releases
+/// up to 0.4.0 wrote `~/.claude/settings.json`, which Claude Code never
+/// consults for MCP servers, so the registration silently did nothing.
 fn connect_claude(opaque_mcp: &Path) -> Result<ConnectResult, String> {
-    let home = dirs_or_home();
-    let config_dir = home.join(".claude");
-    let config_file = config_dir.join("settings.json");
-
-    connect_json_mcp(&config_file, &config_dir, opaque_mcp)
+    let config_file = wizard::claude_code_mcp_config_path(&dirs_or_home());
+    connect_json_mcp(&config_file, opaque_mcp)
 }
 
 /// Connect opaque MCP to Cursor (~/.cursor/mcp.json).
 fn connect_cursor(opaque_mcp: &Path) -> Result<ConnectResult, String> {
-    let home = dirs_or_home();
-    let config_dir = home.join(".cursor");
-    let config_file = config_dir.join("mcp.json");
-
-    connect_json_mcp(&config_file, &config_dir, opaque_mcp)
+    let config_file = dirs_or_home().join(".cursor").join("mcp.json");
+    connect_json_mcp(&config_file, opaque_mcp)
 }
 
 /// Connect opaque MCP to a JSON-based AI tool config file.
-fn connect_json_mcp(
-    config_file: &Path,
-    config_dir: &Path,
-    opaque_mcp: &Path,
-) -> Result<ConnectResult, String> {
-    let path_str = opaque_mcp.to_string_lossy().to_string();
-
-    std::fs::create_dir_all(config_dir)
-        .map_err(|e| format!("cannot create {}: {e}", config_dir.display()))?;
-
-    let mut config: serde_json::Value = if config_file.exists() {
-        let content = std::fs::read_to_string(config_file)
-            .map_err(|e| format!("cannot read {}: {e}", config_file.display()))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("cannot parse {}: {e}", config_file.display()))?
-    } else {
-        serde_json::json!({})
-    };
-
-    let servers = config
-        .as_object_mut()
-        .ok_or("config is not a JSON object")?
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-
-    // Check if opaque is already configured with the same path.
-    if let Some(cmd) = servers
-        .get("opaque")
-        .and_then(|e| e.get("command"))
-        .and_then(|v| v.as_str())
-        && cmd == path_str
-    {
-        return Ok(ConnectResult::AlreadyConnected);
-    }
-
-    let was_update = servers.get("opaque").is_some();
-
-    servers
-        .as_object_mut()
-        .ok_or("mcpServers is not a JSON object")?
-        .insert(
-            "opaque".to_string(),
-            serde_json::json!({
-                "command": path_str,
-                "args": ["--stdio"],
-                "env": {}
-            }),
-        );
-
-    let formatted = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("cannot serialize config: {e}"))?;
-    std::fs::write(config_file, formatted)
-        .map_err(|e| format!("cannot write {}: {e}", config_file.display()))?;
-
-    if was_update {
-        Ok(ConnectResult::Updated)
-    } else {
-        Ok(ConnectResult::Connected)
-    }
+///
+/// Unrelated keys and other server entries survive; an existing `opaque`
+/// entry keeps its `env` and custom `args`. Only the command path and the
+/// legacy `--stdio` argument (rejected by `opaque-mcp`) are rewritten.
+fn connect_json_mcp(config_file: &Path, opaque_mcp: &Path) -> Result<ConnectResult, String> {
+    Ok(
+        match wizard::upsert_json_mcp_config_file(config_file, opaque_mcp)? {
+            wizard::JsonMcpUpsert::Created => ConnectResult::Connected,
+            wizard::JsonMcpUpsert::Updated => ConnectResult::Updated,
+            wizard::JsonMcpUpsert::Unchanged => ConnectResult::AlreadyConnected,
+        },
+    )
 }
 
 /// Connect opaque MCP to Codex (~/.codex/config.toml).
@@ -7247,21 +7198,13 @@ fn connect_codex_at(config_file: &Path, opaque_mcp: &Path) -> Result<ConnectResu
 pub fn detect_mcp_connection() -> Option<String> {
     let home = dirs_or_home();
 
-    // Check Claude Code.
-    let claude_config = home.join(".claude").join("settings.json");
-    if claude_config.exists()
-        && let Ok(content) = std::fs::read_to_string(&claude_config)
-        && content.contains("\"opaque\"")
-    {
+    // Check Claude Code (user-scope servers live in ~/.claude.json).
+    if json_mcp_config_has_opaque(&wizard::claude_code_mcp_config_path(&home)) {
         return Some("Claude Code".into());
     }
 
     // Check Cursor.
-    let cursor_config = home.join(".cursor").join("mcp.json");
-    if cursor_config.exists()
-        && let Ok(content) = std::fs::read_to_string(&cursor_config)
-        && content.contains("\"opaque\"")
-    {
+    if json_mcp_config_has_opaque(&home.join(".cursor").join("mcp.json")) {
         return Some("Cursor".into());
     }
 
@@ -7275,6 +7218,17 @@ pub fn detect_mcp_connection() -> Option<String> {
     }
 
     None
+}
+
+/// True when a JSON MCP config file has an `mcpServers.opaque` entry. The
+/// file is parsed rather than substring-matched: Claude Code's `~/.claude.json`
+/// also stores project paths and other state that may mention "opaque".
+fn json_mcp_config_has_opaque(config_file: &Path) -> bool {
+    std::fs::read_to_string(config_file)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|config| config.get("mcpServers")?.get("opaque").cloned())
+        .is_some()
 }
 
 /// Locate the opaque-mcp binary (on PATH or next to the current executable).
@@ -8438,40 +8392,36 @@ BAZ=
     #[test]
     fn connect_json_mcp_creates_config() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join(".claude");
-        let config_file = config_dir.join("settings.json");
+        let config_file = dir.path().join("home").join(".claude.json");
         let mcp_path = Path::new("/usr/local/bin/opaque-mcp");
 
-        let result = connect_json_mcp(&config_file, &config_dir, mcp_path);
+        let result = connect_json_mcp(&config_file, mcp_path);
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert_eq!(result.unwrap(), ConnectResult::Connected);
 
         assert!(config_file.exists(), "config file should exist");
         let text = fs::read_to_string(&config_file).unwrap();
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let opaque = &v["mcpServers"]["opaque"];
+        assert_eq!(opaque["command"], "/usr/local/bin/opaque-mcp");
         assert_eq!(
-            v["mcpServers"]["opaque"]["command"],
-            "/usr/local/bin/opaque-mcp"
+            opaque["args"],
+            serde_json::json!([]),
+            "opaque-mcp rejects --stdio; the written entry must not carry it"
         );
     }
 
     #[test]
     fn connect_json_mcp_preserves_existing_servers() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join(".claude");
-        fs::create_dir_all(&config_dir).unwrap();
-        let config_file = config_dir.join("settings.json");
+        let config_file = dir.path().join(".claude.json");
         fs::write(
             &config_file,
             r#"{"mcpServers":{"other":{"command":"/usr/bin/other","args":["--flag"]}}}"#,
         )
         .unwrap();
 
-        let result = connect_json_mcp(
-            &config_file,
-            &config_dir,
-            Path::new("/usr/local/bin/opaque-mcp"),
-        );
+        let result = connect_json_mcp(&config_file, Path::new("/usr/local/bin/opaque-mcp"));
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert_eq!(result.unwrap(), ConnectResult::Connected);
 
@@ -8490,16 +8440,14 @@ BAZ=
     #[test]
     fn connect_json_mcp_updates_existing_opaque() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join(".claude");
-        fs::create_dir_all(&config_dir).unwrap();
-        let config_file = config_dir.join("settings.json");
+        let config_file = dir.path().join(".claude.json");
         fs::write(
             &config_file,
             r#"{"mcpServers":{"opaque":{"command":"/old/path/opaque-mcp","args":[]}}}"#,
         )
         .unwrap();
 
-        let result = connect_json_mcp(&config_file, &config_dir, Path::new("/new/path/opaque-mcp"));
+        let result = connect_json_mcp(&config_file, Path::new("/new/path/opaque-mcp"));
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert_eq!(result.unwrap(), ConnectResult::Updated);
 
@@ -8514,22 +8462,103 @@ BAZ=
     #[test]
     fn connect_json_mcp_already_configured() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join(".claude");
-        fs::create_dir_all(&config_dir).unwrap();
-        let config_file = config_dir.join("settings.json");
+        let config_file = dir.path().join(".claude.json");
         fs::write(
             &config_file,
             r#"{"mcpServers":{"opaque":{"command":"/usr/local/bin/opaque-mcp","args":[]}}}"#,
         )
         .unwrap();
 
-        let result = connect_json_mcp(
-            &config_file,
-            &config_dir,
-            Path::new("/usr/local/bin/opaque-mcp"),
-        );
+        let result = connect_json_mcp(&config_file, Path::new("/usr/local/bin/opaque-mcp"));
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert_eq!(result.unwrap(), ConnectResult::AlreadyConnected);
+    }
+
+    /// A 0.4.0 entry (`args: ["--stdio"]`) at the same path is repaired
+    /// instead of being reported as already connected.
+    #[test]
+    fn connect_json_mcp_repairs_legacy_stdio_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("mcp.json");
+        fs::write(
+            &config_file,
+            r#"{"mcpServers":{"opaque":{"command":"/usr/local/bin/opaque-mcp","args":["--stdio"],"env":{}}}}"#,
+        )
+        .unwrap();
+
+        let result = connect_json_mcp(&config_file, Path::new("/usr/local/bin/opaque-mcp"));
+        assert_eq!(result, Ok(ConnectResult::Updated));
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_file).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["opaque"]["args"], serde_json::json!([]));
+    }
+
+    /// Running connect twice against a file that already holds unrelated
+    /// state (other servers, other top-level keys) leaves that state intact
+    /// and reports the second run as already connected.
+    #[test]
+    fn connect_json_mcp_second_run_is_idempotent_and_keeps_unrelated_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join(".claude.json");
+        let original = serde_json::json!({
+            "numStartups": 7,
+            "projects": {"/home/user/repo": {"allowedTools": ["Bash"]}},
+            "mcpServers": {
+                "other": {"command": "/usr/bin/other", "args": ["--flag"], "env": {"K": "v"}}
+            }
+        });
+        fs::write(
+            &config_file,
+            serde_json::to_string_pretty(&original).unwrap(),
+        )
+        .unwrap();
+        let mcp = Path::new("/usr/local/bin/opaque-mcp");
+
+        assert_eq!(
+            connect_json_mcp(&config_file, mcp),
+            Ok(ConnectResult::Connected)
+        );
+        let after_first = fs::read_to_string(&config_file).unwrap();
+        assert_eq!(
+            connect_json_mcp(&config_file, mcp),
+            Ok(ConnectResult::AlreadyConnected)
+        );
+        let after_second = fs::read_to_string(&config_file).unwrap();
+        assert_eq!(
+            after_first, after_second,
+            "second connect must not rewrite the file"
+        );
+
+        let v: serde_json::Value = serde_json::from_str(&after_second).unwrap();
+        assert_eq!(v["numStartups"], original["numStartups"]);
+        assert_eq!(v["projects"], original["projects"]);
+        assert_eq!(v["mcpServers"]["other"], original["mcpServers"]["other"]);
+        assert_eq!(
+            v["mcpServers"]["opaque"]["command"],
+            "/usr/local/bin/opaque-mcp"
+        );
+    }
+
+    #[test]
+    fn json_mcp_config_has_opaque_parses_instead_of_substring_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".claude.json");
+        // Mentions "opaque" as a project path but has no opaque MCP server.
+        fs::write(
+            &file,
+            r#"{"projects":{"/home/user/opaque":{}},"mcpServers":{"other":{"command":"x"}}}"#,
+        )
+        .unwrap();
+        assert!(!json_mcp_config_has_opaque(&file));
+        fs::write(
+            &file,
+            r#"{"mcpServers":{"opaque":{"command":"/x/opaque-mcp"}}}"#,
+        )
+        .unwrap();
+        assert!(json_mcp_config_has_opaque(&file));
+        assert!(!json_mcp_config_has_opaque(
+            &dir.path().join("missing.json")
+        ));
     }
 
     // -----------------------------------------------------------------------
