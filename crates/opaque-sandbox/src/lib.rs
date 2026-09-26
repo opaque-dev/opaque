@@ -233,6 +233,12 @@ impl SandboxExecutor {
                 profile,
                 ..
             } = action;
+            // Decide how the workload will be contained before any secret is
+            // resolved: a host with no usable sandbox strategy fails closed
+            // here, and the audit events below name the strategy chosen.
+            let plan = SandboxPlan::for_profile(&profile)?;
+            let sandbox_label = plan.label();
+
             // Resolve secret references.
             let resolved_secrets = Self::resolve_secrets(&profile, resolver_factory)?;
 
@@ -257,7 +263,7 @@ impl SandboxExecutor {
                 .with_operation("sandbox.exec")
                 .with_outcome("created")
                 .with_detail(format!(
-                    "profile={profile_name} argument_count={}",
+                    "profile={profile_name} argument_count={} sandbox={sandbox_label}",
                     command.len(),
                 ));
             audit.emit(sandbox_event);
@@ -271,16 +277,21 @@ impl SandboxExecutor {
 
             // Drain in the same owned future as execution. No plaintext output
             // copies or detached collector survive cancellation.
-            let (exit_code, s) =
-                summarize_execution(execute_platform_sandbox(&profile, command, env, tx), rx)
-                    .await?;
+            let (exit_code, s) = summarize_execution(
+                execute_platform_sandbox(&plan, &profile, command, env, tx),
+                rx,
+            )
+            .await?;
 
-            // Emit SandboxCompleted audit event.
+            // Emit SandboxCompleted audit event, naming the strategy that
+            // actually contained the workload.
             let completed_event = AuditEvent::new(AuditEventKind::SandboxCompleted)
                 .with_request_id(request_id)
                 .with_operation("sandbox.exec")
                 .with_outcome(if exit_code == 0 { "success" } else { "failed" })
-                .with_detail(format!("profile={profile_name} exit_code={exit_code}"));
+                .with_detail(format!(
+                    "profile={profile_name} exit_code={exit_code} sandbox={sandbox_label}"
+                ));
             audit.emit(completed_event);
 
             let truncated = s.stdout_len > 64 * 1024 || s.stderr_len > 64 * 1024;
@@ -489,70 +500,124 @@ pub async fn execute_direct(
     Ok(exit_code)
 }
 
-/// Dispatch to the platform-specific sandbox executor.
+/// How a `sandbox.exec` will be contained on this host.
 ///
-/// When `profile.sandbox` is `false`, bypasses the platform sandbox and uses
+/// Decided before the `sandbox.created` audit event so the event can name the
+/// strategy, and before any secret is resolved so a host with no usable
+/// sandbox never sees plaintext. On Linux the decision is the probed
+/// capability set (bubblewrap, Landlock, seccomp, user namespaces) turned
+/// into a [`linux::SandboxStrategy`]; a host without a namespace wrapper is
+/// refused here, before anything is spawned.
+enum SandboxPlan {
+    /// `sandbox = false`: environment sanitization only.
+    Direct,
+    #[cfg(target_os = "linux")]
+    Linux(linux::SandboxStrategy),
+    #[cfg(target_os = "macos")]
+    Seatbelt,
+}
+
+impl SandboxPlan {
+    fn for_profile(profile: &ExecProfile) -> Result<Self, String> {
+        if !profile.sandbox {
+            return Ok(Self::Direct);
+        }
+        Self::platform_default()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn platform_default() -> Result<Self, String> {
+        let caps = linux::SandboxCapabilities::detect();
+        caps.log_capabilities();
+        linux::SandboxStrategy::select(&caps)
+            .map(Self::Linux)
+            .map_err(|e| format!("linux sandbox unavailable: {e}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn platform_default() -> Result<Self, String> {
+        Ok(Self::Seatbelt)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn platform_default() -> Result<Self, String> {
+        Err("sandbox execution is not supported on this platform".into())
+    }
+
+    /// Label recorded in the audit trail: `none` for direct execution,
+    /// `seatbelt` on macOS, or the Linux strategy actually selected such as
+    /// `bubblewrap+landlock+seccomp` or `unshare+seccomp`.
+    fn label(&self) -> String {
+        match self {
+            Self::Direct => "none".into(),
+            #[cfg(target_os = "linux")]
+            Self::Linux(strategy) => strategy.name(),
+            #[cfg(target_os = "macos")]
+            Self::Seatbelt => "seatbelt".into(),
+        }
+    }
+}
+
+/// Dispatch to the platform-specific sandbox executor according to `plan`.
+///
+/// [`SandboxPlan::Direct`] bypasses the platform sandbox and uses
 /// `execute_direct()` instead (environment sanitization only).
 async fn execute_platform_sandbox(
+    plan: &SandboxPlan,
     profile: &ExecProfile,
     command: Vec<String>,
     env: HashMap<String, String>,
     tx: mpsc::Sender<ExecFrame>,
 ) -> Result<i32, String> {
-    // Bypass platform sandbox when the profile disables it.
-    if !profile.sandbox {
-        tracing::info!(
-            profile = %profile.name,
-            "sandbox disabled for profile, using direct execution"
-        );
-        return execute_direct(
-            &command,
-            env,
-            profile.limits.timeout_secs,
-            profile.limits.max_output_bytes,
-            tx,
-            Some(&profile.project_dir),
-        )
-        .await
-        .map_err(|e| format!("direct execution failed: {e}"));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let config = linux::LinuxSandboxConfig {
-            command,
-            env,
-            project_dir: profile.project_dir.clone(),
-            extra_read_paths: profile.extra_read_paths.clone(),
-            network_allow: profile.network.allow.clone(),
-            timeout_secs: profile.limits.timeout_secs,
-            max_output_bytes: profile.limits.max_output_bytes,
-        };
-        linux::execute(config, tx)
+    match plan {
+        SandboxPlan::Direct => {
+            tracing::info!(
+                profile = %profile.name,
+                "sandbox disabled for profile, using direct execution"
+            );
+            execute_direct(
+                &command,
+                env,
+                profile.limits.timeout_secs,
+                profile.limits.max_output_bytes,
+                tx,
+                Some(&profile.project_dir),
+            )
             .await
-            .map_err(|e| format!("linux sandbox failed: {e}"))
-    }
+            .map_err(|e| format!("direct execution failed: {e}"))
+        }
 
-    #[cfg(target_os = "macos")]
-    {
-        let config = macos::MacOSSandboxConfig {
-            command,
-            env,
-            project_dir: profile.project_dir.clone(),
-            extra_read_paths: profile.extra_read_paths.clone(),
-            network_allow: profile.network.allow.clone(),
-            timeout_secs: profile.limits.timeout_secs,
-            max_output_bytes: profile.limits.max_output_bytes,
-        };
-        macos::execute(config, tx)
-            .await
-            .map_err(|e| format!("macos sandbox failed: {e}"))
-    }
+        #[cfg(target_os = "linux")]
+        SandboxPlan::Linux(strategy) => {
+            let config = linux::LinuxSandboxConfig {
+                command,
+                env,
+                project_dir: profile.project_dir.clone(),
+                extra_read_paths: profile.extra_read_paths.clone(),
+                network_allow: profile.network.allow.clone(),
+                timeout_secs: profile.limits.timeout_secs,
+                max_output_bytes: profile.limits.max_output_bytes,
+            };
+            linux::execute_with_strategy(config, strategy, tx)
+                .await
+                .map_err(|e| format!("linux sandbox failed: {e}"))
+        }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (profile, command, env, tx);
-        Err("sandbox execution is not supported on this platform".into())
+        #[cfg(target_os = "macos")]
+        SandboxPlan::Seatbelt => {
+            let config = macos::MacOSSandboxConfig {
+                command,
+                env,
+                project_dir: profile.project_dir.clone(),
+                extra_read_paths: profile.extra_read_paths.clone(),
+                network_allow: profile.network.allow.clone(),
+                timeout_secs: profile.limits.timeout_secs,
+                max_output_bytes: profile.limits.max_output_bytes,
+            };
+            macos::execute(config, tx)
+                .await
+                .map_err(|e| format!("macos sandbox failed: {e}"))
+        }
     }
 }
 
@@ -617,9 +682,16 @@ mod tests {
         profile.sandbox = true;
         profile.project_dir = dir.path().into();
         let (tx, mut rx) = mpsc::channel(16);
-        let result =
-            execute_platform_sandbox(&profile, vec!["/usr/bin/true".into()], HashMap::new(), tx)
-                .await;
+        let plan = SandboxPlan::for_profile(&profile).unwrap();
+        assert_eq!(plan.label(), "seatbelt");
+        let result = execute_platform_sandbox(
+            &plan,
+            &profile,
+            vec!["/usr/bin/true".into()],
+            HashMap::new(),
+            tx,
+        )
+        .await;
         if macos::MacOSSandboxCapabilities::detect().sandbox_exec_works {
             assert_eq!(result.unwrap(), 0);
         } else {
