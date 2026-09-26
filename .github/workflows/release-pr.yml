@@ -29,7 +29,7 @@ jobs:
     # Merging the release PR must not immediately open another one.
     if: ${{ github.repository == 'opaque-dev/opaque' && github.event.repository.private == false && !startsWith(github.event.head_commit.message, 'chore(release):') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # git-cliff reads history back to the last tag.
           fetch-depth: 0
