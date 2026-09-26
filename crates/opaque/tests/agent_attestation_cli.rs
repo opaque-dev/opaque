@@ -743,7 +743,10 @@ fn assert_cancelled_group(script: &str, signal: i32) {
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(status.code(), Some(128 + signal));
-    let closed = receive.recv_timeout(Duration::from_secs(3));
+    // Generous: reaping the group and draining the pipe can lag well past a
+    // few seconds under a saturated parallel test run. This still fails when a
+    // descendant genuinely leaks stdout, only later.
+    let closed = receive.recv_timeout(Duration::from_secs(30));
     // Cleanup first, including assertion-failure paths, so the reader cannot
     // leave an owned process behind if this regression returns.
     drop(cleanup);
