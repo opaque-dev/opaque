@@ -296,16 +296,27 @@ the full shape. Hardening practice:
 - Leave `network.allow = []` unless the command needs egress, then list
   exact `host:port` entries. An empty list blocks network syscalls via
   seccomp on Linux (`crates/opaque-sandbox/src/linux.rs`).
-- Keep `extra_read_paths` minimal; the project directory is the only
-  writable path.
+- Keep `extra_read_paths` minimal; the project directory, `/tmp`, `/var/tmp`
+  and `/dev/shm` are the only writable paths (existing device nodes such as
+  `/dev/null` stay usable, nothing can be created under `/dev`).
 - Set realistic `limits.timeout_secs` and `limits.max_output_bytes`.
 - The sandbox always denies `.opaque`, `.ssh`, and `.gnupg`
   (`PROTECTED_DIRS` in `crates/opaque-sandbox/src/linux.rs`), clears the
   inherited environment, and never sets `OPAQUE_SOCK` in the child.
-- Platform honesty: Linux layers (Bubblewrap, Landlock, seccomp) degrade
-  gracefully when a mechanism is missing on the host; install `bwrap` and
-  run a Landlock-capable kernel (5.13+) so the strongest layers engage.
-  macOS Seatbelt is documented in the source as best-effort containment
+- Platform honesty: on Linux the daemon probes the host before each
+  `sandbox.exec` (`bwrap` on PATH, the `landlock_create_ruleset` ABI answer
+  next to the securityfs LSM list, seccomp, `unshare --user`) and picks the
+  strongest strategy those facts support. A missing kernel layer is dropped
+  explicitly and the strategy actually used is recorded as
+  `sandbox=<strategy>` in the `sandbox.created` and `sandbox.completed`
+  audit events; a host with no namespace wrapper at all is refused before
+  anything runs. The restrictions are installed by the sandbox helper inside
+  the namespaces, on the workload and never on the wrapper
+  (`crates/opaque-sandbox/src/linux.rs`). Install `bwrap` and run a
+  Landlock-capable kernel (5.13+) so `bubblewrap+landlock+seccomp` engages;
+  prerequisites per distribution are in the
+  [deployment guide](../deployment.md#sandbox-prerequisites). macOS Seatbelt
+  is documented in the source as best-effort containment
   (`crates/opaque-sandbox/src/macos.rs`).
 - Reference secrets by resolver (`keychain:`, `env:`, `profile:`), never
   literal values in `[env]` (`examples/profiles/dev.toml`,

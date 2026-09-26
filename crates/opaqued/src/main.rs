@@ -757,6 +757,13 @@ impl EnclaveFacade for Enclave {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // The Linux sandbox re-invokes this binary inside bwrap/unshare as the
+    // helper that restricts itself and execs the workload. That role is
+    // decided on argv[1] before anything else, so a workload argument such
+    // as `--help` can never be mistaken for the daemon's own flags.
+    #[cfg(target_os = "linux")]
+    opaque_sandbox::linux::maybe_run_helper();
+
     // Answered before anything else starts. `opaqued --version` used to fall
     // through to a full daemon start — binding the socket, verifying custody,
     // taking the PID lock — which is a startling way to find out what you just
@@ -766,6 +773,12 @@ fn main() {
     }
 
     init_tracing();
+
+    // Say what sandbox.exec will do on this host before the first request,
+    // with the kernel evidence behind it (issue #121: a missing layer must be
+    // visible at startup, not discovered as an unexplained exec failure).
+    #[cfg(target_os = "linux")]
+    opaque_sandbox::linux::log_startup_capabilities();
 
     // Process-wide rustls provider, installed once up front: the approval
     // server builds a rustls ServerConfig directly, which PANICS if no
