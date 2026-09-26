@@ -18,7 +18,7 @@ state. The adapter cannot enroll a route, select an upstream credential or autho
 an action. Local profile inspection tools are the documented exception to daemon
 dispatch; they read metadata from the adapter's own account.
 
-The adapter validates tool arguments against its published schemas and admits up to eight concurrent tool calls. Ping, tool listing, and cancellation remain responsive while calls wait on the broker. Cancellation stops waiting and closes that call's IPC connection; it does not promise to undo work already dispatched. Broker status and task receipt reads have a 30-second deadline, ordinary operations and sandbox execution five minutes, and bounded task execution 61 minutes. A timeout after dispatch reports an uncertain outcome and never triggers an automatic replay.
+The adapter validates tool arguments against its published schemas before any IPC; a rejected call names the failing field and constraint (see [validation errors](#tool-arguments-do-not-match-the-input-schema)). It admits up to eight concurrent tool calls. Ping, tool listing, and cancellation remain responsive while calls wait on the broker. Cancellation stops waiting and closes that call's IPC connection; it does not promise to undo work already dispatched. Broker status and task receipt reads have a 30-second deadline, ordinary operations and sandbox execution five minutes, and bounded task execution 61 minutes. A timeout after dispatch reports an uncertain outcome and never triggers an automatic replay.
 
 ## Setup
 
@@ -75,10 +75,23 @@ gateway. Follow [qualifying one MCP tool](mcp-qualified-tools.md) before enablin
 ### 4. Verify discovery
 
 Use the client's tool list to confirm the built-in `opaque_*` tools are present.
-Discovery alone does not grant execution authority. Signed `opaque_mcp_tool_*`
+Discovery alone does not grant execution authority. On every `tools/list` the
+adapter asks the daemon for `mcp_catalog`; the reply carries the signed routes this
+caller may see and whether the HTTPS gateway is served at all. Recorded from a
+daemon started without an `[mcp]` section:
+
+```json
+{"id":1,"result":{"gateway":{"availability":"disabled"},"tools":[]}}
+```
+
+That session listed exactly the 22 built-in tools. Signed `opaque_mcp_tool_*`
 routes appear only when returned by the authenticated broker and allowed by its
-current discovery policy. An unavailable gateway can leave built-in tools visible
-while omitting the enrolled third-party routes.
+current discovery policy. `opaque_mcp_invocation_get` and
+`opaque_mcp_invocation_revoke` appear only when `gateway.availability` is `enabled`
+or `fixture_only`; a missing field (daemons through 0.5.0), `disabled` or any other
+value hides them. An unavailable gateway leaves the built-in tools visible while
+omitting every `opaque_mcp_*` tool. This gate exists in source builds after 0.5.0;
+the 0.5.0 packages list the two invocation tools unconditionally.
 
 ## Available Tools
 
@@ -93,6 +106,9 @@ operation has no side effects or that every provider field is non-sensitive.
 Operations classified `REVEAL`, which return plaintext secret values, are excluded.
 
 ### Enrolled third-party MCP tools
+
+These rows are listed only while the daemon reports its gateway as served; see
+[verify discovery](#4-verify-discovery).
 
 | Tool | Daemon method | Description |
 |------|-----------|-------------|
@@ -219,6 +235,28 @@ These operations are intentionally excluded from MCP entirely:
 - Verify `opaque-mcp` is in your client's MCP config and the path is correct.
 - Refresh the tool list or restart the client after changing its configuration.
 - For a dynamic route, inspect the signed registry and discovery policy at the broker. Its absence is not evidence that the upstream provider removed the tool.
+
+### "tool arguments do not match the input schema"
+
+The adapter checked the arguments against the tool's published `inputSchema` and
+sent nothing to the daemon. The JSON-RPC error (code `-32602`) names the failing
+field as a JSON pointer plus the violated constraint, so one correction fixes the
+call. Recorded from a live stdio session, `opaque_secrets_status` called with `{}`:
+
+```json
+{"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"tool arguments do not match the input schema: missing required field \"/profile\""}}
+```
+
+The same session's wrong-type and unexpected-field calls read:
+
+```
+"/task_id" must be of type string
+"/" has 1 unexpected field; allowed fields: cursor
+```
+
+At most three failures are reported per call. Messages never quote supplied values
+or caller-chosen field names; allowed fields, types and limits come from the
+published schema. Adapters through 0.5.0 returned only the generic prefix.
 
 ### "Connection failed"
 
