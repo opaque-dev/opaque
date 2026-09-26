@@ -59,10 +59,13 @@ impl Peer {
                 // Keep observing after the last reply, including when no I/O is
                 // expected. On shutdown, drain connections queued before the CLI
                 // exited rather than returning a count fixed by the reply list.
+                // Observe shutdown before accept so a stale WouldBlock cannot
+                // hide a connection queued before finish signaled the worker.
+                let stopping = worker_stop.load(std::sync::atomic::Ordering::Acquire);
                 let mut stream = match listener.accept() {
                     Ok((stream, _)) => stream,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        if worker_stop.load(std::sync::atomic::Ordering::Acquire) {
+                        if stopping {
                             assert!(
                                 replies.is_empty(),
                                 "CLI ended before every expected request"
