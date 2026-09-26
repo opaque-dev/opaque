@@ -2,12 +2,21 @@
 #
 # Tailored for OpenAI Codex CLI agent sessions. Enables agent session
 # enforcement and allows GitHub secret sync and GitLab CI/CD variable
-# operations with workspace scoping. All operations require first-use
-# biometric approval with a 10-minute lease (one approval per Codex session).
+# operations. All operations require first-use biometric approval with a
+# 10-minute lease (one approval per Codex session).
 #
 # Risk: Low. Secret values are never returned to agents. Agents can set,
 # list, or delete secret entries, but plaintext values are resolved inside
 # opaqued and sent directly to the provider API.
+#
+# Workspace scoping is not enabled by default: a shipped preset cannot know
+# your repository. To bind a rule to one git remote, add to that rule:
+#
+#   [rules.workspace]
+#   remote_url_pattern = "*github.com:your-org/*"
+#
+# opaqued verifies the caller's git checkout itself. With that table present,
+# requests from outside a matching, verified checkout are denied.
 #
 # Usage:
 #   opaque init --preset codex-agent
@@ -16,10 +25,10 @@
 enforce_agent_sessions = true
 agent_session_ttl_secs = 3600
 
-# Client classification is audit-only; operations are gated on out-of-band approval
-# and workspace scope. enforce_agent_sessions requires an approved session token,
-# created via `opaque connect` (which prompts for approval — an agent cannot mint
-# its own session because it cannot satisfy the prompt).
+# Client classification is audit-only; operations are gated on out-of-band
+# approval. enforce_agent_sessions requires an approved session token, created
+# via `opaque connect` (which prompts for approval; an agent cannot mint its
+# own session because it cannot satisfy the prompt).
 
 # ---- Deny agents from revealing secrets ----
 
@@ -29,16 +38,13 @@ operation_pattern = "*.reveal"
 allow = false
 client_types = ["agent"]
 
-# ---- GitHub secret rules (workspace-scoped) ----
+# ---- GitHub secret rules ----
 
 [[rules]]
 name = "allow-github-list-secrets"
 operation_pattern = "github.list_secrets"
 allow = true
 client_types = ["agent"]
-
-[rules.workspace]
-require = true
 
 [rules.approval]
 require = "first_use"
@@ -51,9 +57,6 @@ operation_pattern = "github.set_actions_secret"
 allow = true
 client_types = ["agent"]
 
-[rules.workspace]
-require = true
-
 [rules.approval]
 require = "first_use"
 factors = ["local_bio"]
@@ -64,9 +67,6 @@ name = "allow-github-set-codespaces-secret"
 operation_pattern = "github.set_codespaces_secret"
 allow = true
 client_types = ["agent"]
-
-[rules.workspace]
-require = true
 
 [rules.approval]
 require = "first_use"
@@ -79,9 +79,6 @@ operation_pattern = "github.set_dependabot_secret"
 allow = true
 client_types = ["agent"]
 
-[rules.workspace]
-require = true
-
 [rules.approval]
 require = "first_use"
 factors = ["local_bio"]
@@ -93,9 +90,6 @@ operation_pattern = "github.set_org_secret"
 allow = true
 client_types = ["agent"]
 
-[rules.workspace]
-require = true
-
 [rules.approval]
 require = "first_use"
 factors = ["local_bio"]
@@ -106,9 +100,6 @@ name = "allow-github-delete-secret"
 operation_pattern = "github.delete_secret"
 allow = true
 client_types = ["agent"]
-
-[rules.workspace]
-require = true
 
 [rules.approval]
 require = "first_use"
@@ -122,9 +113,6 @@ name = "allow-gitlab-set-ci-variable"
 operation_pattern = "gitlab.set_ci_variable"
 allow = true
 client_types = ["agent"]
-
-[rules.workspace]
-require = true
 
 [rules.approval]
 require = "first_use"

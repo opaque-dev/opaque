@@ -4757,7 +4757,7 @@ fn available_presets() -> Vec<(&'static str, &'static str, &'static str)> {
         ),
         (
             "codex-agent",
-            "Codex CLI agent preset with workspace-scoped GitHub/GitLab rules and session enforcement",
+            "Codex CLI agent preset: GitHub/GitLab rules with first-use approval and session enforcement",
             PRESET_CODEX_AGENT,
         ),
     ]
@@ -7912,6 +7912,55 @@ lease_ttl = 0
         assert_eq!(resolve_preset_name("safe-demo", None).unwrap(), "safe-demo");
         assert!(resolve_preset_name("apply", None).is_err());
         assert!(resolve_preset_name("safe-demo", Some("extra")).is_err());
+    }
+
+    /// The codex-agent preset shipped `[rules.workspace] require = true` in
+    /// seven rules. `require` is not a WorkspaceMatch field and the table
+    /// does not deny unknown keys, so the advertised scoping never happened
+    /// while `opaque policy check` passed. Presets may only use workspace
+    /// keys the engine enforces, and may not advertise scoping they do not
+    /// configure.
+    #[test]
+    fn presets_use_only_enforced_workspace_keys_and_do_not_oversell_scoping() {
+        let enforced = ["remote_url_pattern", "branch_pattern", "require_clean"];
+        let mut rules_seen = 0;
+        for (preset, description, content) in available_presets() {
+            let doc: toml_edit::DocumentMut = content.parse().unwrap();
+            let rules = doc
+                .get("rules")
+                .and_then(|r| r.as_array_of_tables())
+                .unwrap_or_else(|| panic!("preset '{preset}' has no [[rules]]"));
+            let mut scoped = false;
+            for rule in rules {
+                rules_seen += 1;
+                let Some(workspace) = rule.get("workspace").and_then(|w| w.as_table_like()) else {
+                    continue;
+                };
+                for (key, _) in workspace.iter() {
+                    assert!(
+                        enforced.contains(&key),
+                        "preset '{preset}' rule {:?} uses [rules.workspace] key {key:?}, which the \
+                         policy engine does not read",
+                        rule.get("name").and_then(|n| n.as_str())
+                    );
+                }
+                scoped = true;
+            }
+            if !scoped {
+                assert!(
+                    !description.contains("workspace-scoped"),
+                    "preset '{preset}' advertises workspace scoping it does not configure"
+                );
+                assert!(
+                    !content.contains("require = true"),
+                    "preset '{preset}' still carries the inert workspace key"
+                );
+            }
+        }
+        assert!(
+            rules_seen > 10,
+            "expected to inspect every preset rule, saw {rules_seen}"
+        );
     }
 
     #[test]
