@@ -352,6 +352,87 @@ The daemon must verify the following at startup before binding the socket:
 
 If any check fails, log the specific missing component and exit non-zero. Do not silently degrade to a mode where approvals are skipped.
 
+### Sandbox prerequisites
+
+`sandbox.exec` needs one namespace wrapper. At startup and before every exec
+the daemon runs each wrapper once with a throwaway `true` in the exact
+namespace shape the sandbox uses, queries the kernel for Landlock
+(`landlock_create_ruleset` ABI answer, recorded next to the
+`/sys/kernel/security/lsm` list) and seccomp, and selects the strongest
+strategy those facts support:
+
+| Strategy (audit `sandbox=`) | Requires |
+|---|---|
+| `bubblewrap+landlock+seccomp` | `bwrap` builds the sandbox shape; kernel has Landlock enabled |
+| `bubblewrap+seccomp` | `bwrap` works; kernel without Landlock (`landlock_evidence=... abi-probe=EOPNOTSUPP`) |
+| `unshare+landlock+seccomp` | no working `bwrap`; `unshare --user --mount --pid --fork --map-root-user --net` works; Landlock enabled |
+| `unshare+seccomp` | as above without Landlock |
+| refused: `no sandbox strategy available: ...` | neither wrapper can build its namespaces here; nothing is spawned |
+
+A layer the kernel lacks is dropped with a warning and the strategy name
+shrinks accordingly; the `sandbox.created` and `sandbox.completed` audit
+events carry the name that was actually used. Nothing is downgraded silently
+and nothing runs without a wrapper. The wrapper itself runs unrestricted so it
+can finish its setup; the daemon binary re-invoked as
+`opaqued __opaque-sandbox-helper` inside the namespaces installs
+NO_NEW_PRIVS, Landlock and seccomp on itself, reports readiness to the
+daemon, then execs the command. Keep `opaqued` outside `~/.opaque`, `~/.ssh`
+and `~/.gnupg`: those paths are hidden inside the sandbox, so the helper
+could not be found there.
+
+Install and check:
+
+```bash
+sudo apt-get install -y bubblewrap        # Debian/Ubuntu; Fedora: dnf install bubblewrap
+cat /sys/kernel/security/lsm              # lists landlock on kernels 5.13+ with the LSM enabled
+opaqued 2>&1 | grep "linux sandbox"       # or read the startup log of the running daemon
+```
+
+Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor. The
+`bubblewrap` package ships an AppArmor profile that permits them for `bwrap`;
+for `unshare`, or for a `bwrap` built from source, set
+`sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
+
+Containers: creating user namespaces needs `CAP_SYS_ADMIN` and a seccomp
+profile that allows `unshare`, which Docker's defaults deny. Run the daemon's
+container with `--cap-add SYS_ADMIN --security-opt seccomp=unconfined`; on
+Docker Desktop's 7.0.12-linuxkit kernel, bubblewrap's loopback setup for
+`network.allow = []` additionally needs `--cap-add NET_ADMIN` (or
+`--privileged`), otherwise the `bwrap` probe fails and the daemon falls over
+to `unshare`. With the default confinement the daemon still starts, logs why
+both probes failed, and refuses every exec with the same reasons:
+
+```text
+$ opaque exec --profile dev -- echo "hello from sandbox"
+!!  operation execution failed: linux sandbox unavailable: sandbox setup failed: no sandbox strategy available: bubblewrap: bwrap probe exit status: 1: bwrap: Creating new namespace failed: Operation not permitted; unshare: unshare probe exit status: 1: unshare: unshare failed: Operation not permitted; install bubblewrap or enable unprivileged user namespaces (Ubuntu 24.04: sysctl kernel.apparmor_restrict_unprivileged_userns=0; containers need CAP_SYS_ADMIN and a seccomp profile that allows unshare); landlock: lsm=securityfs-unreadable abi=v8
+  code: operation_failed
+```
+
+The refusal is audited as `operation.failed`; no `sandbox.created` event is
+written because no sandbox existed.
+
+When `bwrap` is missing, the failover is visible in the startup log and in
+the audit rows (Debian 12 container, 7.0.12 kernel):
+
+```text
+INFO opaque_sandbox::linux: linux sandbox capabilities detected bubblewrap=false bubblewrap_evidence=bwrap is not on PATH landlock=true landlock_evidence=lsm=securityfs-unreadable abi=v8 seccomp=true user_namespaces=true user_namespaces_evidence=ok
+INFO opaque_sandbox::linux: linux sandbox strategy selected for sandbox.exec strategy=unshare+landlock+seccomp
+```
+
+```text
+sandbox.created|created|profile=dev argument_count=2 sandbox=unshare+landlock+seccomp
+sandbox.completed|success|profile=dev exit_code=0 sandbox=unshare+landlock+seccomp
+```
+
+On a kernel without Landlock (here: the same kernel with the Landlock
+syscalls denied by the container's seccomp profile) the daemon says so and
+drops that layer:
+
+```text
+WARN opaque_sandbox::linux: landlock unavailable on this kernel; failing over to namespace isolation without the filesystem layer wrapper="bwrap" evidence=lsm=securityfs-unreadable abi-probe=EOPNOTSUPP (LSM built but not enabled at boot)
+INFO opaque_sandbox::linux: linux sandbox strategy selected for sandbox.exec strategy=bubblewrap+seccomp
+```
+
 ---
 
 ## Approval Architecture Invariants

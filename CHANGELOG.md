@@ -9,6 +9,37 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux `sandbox.exec` works again on Landlock-capable kernels (#123). The
+  daemon used to install NO_NEW_PRIVS, Landlock and seccomp on the namespace
+  wrapper itself, so `bwrap` could not bind its netlink socket and `unshare`
+  could not write its uid map; every sandboxed exec failed closed after about
+  a millisecond with exit code 1. The wrapper now runs unrestricted and execs
+  the daemon binary as the sandbox helper (`opaqued __opaque-sandbox-helper`),
+  which restricts itself inside the namespaces, confirms readiness to the
+  daemon over an inherited pipe, and only then execs the workload. The
+  restrictions land on the workload and its descendants, never on the wrapper.
+- Sandbox capability detection carries kernel evidence (#121). Landlock counts
+  as available only when `landlock_create_ruleset` answers the ABI probe, and
+  the securityfs LSM list is logged next to that answer. A missing layer fails
+  over explicitly (`bubblewrap+seccomp`, `unshare+seccomp`, `unshare`) and the
+  strategy actually used is recorded as `sandbox=<strategy>` in the
+  `sandbox.created` and `sandbox.completed` audit events (`none` for
+  `sandbox = false`, `seatbelt` on macOS). A host with neither `bwrap` nor
+  unprivileged user namespaces is refused before anything is spawned, with the
+  reason in the error instead of a workload exit code of 1. `opaqued` logs the
+  probe and the selected strategy at startup.
+- A namespace wrapper that dies before the workload starts is reported as a
+  sandbox error carrying the wrapper's own stderr, never as the workload's
+  exit code.
+- Under bubblewrap a project directory below `/tmp` was hidden, read-only,
+  beneath the sandbox's tmpfs; the tmpfs is now mounted before the project
+  bind.
+- The Landlock ruleset lets the workload use existing device nodes
+  (`/dev/null`, `/dev/zero`, terminals) and `/dev/shm`. The grants were
+  missing before, which never showed while every Linux exec failed closed.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

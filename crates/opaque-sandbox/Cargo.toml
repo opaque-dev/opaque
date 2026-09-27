@@ -29,3 +29,7 @@ seccompiler = "0.4"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
+[[test]]
+name = "linux_sandbox_e2e"
+harness = false
