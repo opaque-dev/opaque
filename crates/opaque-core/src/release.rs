@@ -28,58 +28,76 @@ pub struct StagingReleaseAction {
     pub github_token_ref: Option<String>,
 }
 
+/// `owner/repo` with the component character set GitHub accepts. Shared by
+/// the staging task family and the scoped `github.workflow.dispatch` kind.
+pub fn validate_repository(repo: &str) -> Result<(), &'static str> {
+    let components: Vec<_> = repo.split('/').collect();
+    if components.len() != 2
+        || components.iter().any(|part| {
+            part.is_empty()
+                || part.len() > 100
+                || *part == "."
+                || *part == ".."
+                || !part
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+        })
+    {
+        return Err("invalid staging repository or workflow identity");
+    }
+    Ok(())
+}
+
+/// A workflow file directly under `.github/workflows/`, never a nested path.
+pub fn validate_workflow_path(path: &str) -> Result<(), &'static str> {
+    let filename = path
+        .strip_prefix(".github/workflows/")
+        .ok_or("invalid staging workflow path")?;
+    if filename.is_empty()
+        || filename.len() > 100
+        || !(filename.ends_with(".yml") || filename.ends_with(".yaml"))
+        || !filename
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+    {
+        return Err("invalid staging workflow path");
+    }
+    Ok(())
+}
+
+/// A branch name, never a tag, SHA, `refs/` path or arbitrary ref expression.
+pub fn validate_branch(branch: &str) -> Result<(), &'static str> {
+    if branch.is_empty()
+        || branch.len() > 200
+        || branch.starts_with("refs/")
+        || branch.ends_with('.')
+        || branch.ends_with('/')
+        || branch.contains("..")
+        || branch.contains("//")
+        || branch
+            .split('/')
+            .any(|p| p.is_empty() || p.starts_with('.') || p.ends_with(".lock"))
+        || !branch
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_/.".contains(&c))
+        || hex_lower(branch, 40)
+    {
+        return Err("invalid staging branch");
+    }
+    Ok(())
+}
+
 impl StagingReleaseAction {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.operation != STAGING_RELEASE_OPERATION {
             return Err("invalid staging release operation");
         }
-        let components: Vec<_> = self.repo.split('/').collect();
-        if components.len() != 2
-            || components.iter().any(|part| {
-                part.is_empty()
-                    || part.len() > 100
-                    || *part == "."
-                    || *part == ".."
-                    || !part
-                        .bytes()
-                        .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
-            })
-            || self.repository_id == 0
-            || self.workflow_id == 0
-        {
+        validate_repository(&self.repo)?;
+        if self.repository_id == 0 || self.workflow_id == 0 {
             return Err("invalid staging repository or workflow identity");
         }
-        let filename = self
-            .workflow_path
-            .strip_prefix(".github/workflows/")
-            .ok_or("invalid staging workflow path")?;
-        if filename.is_empty()
-            || filename.len() > 100
-            || !(filename.ends_with(".yml") || filename.ends_with(".yaml"))
-            || !filename
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
-        {
-            return Err("invalid staging workflow path");
-        }
-        let branch = &self.workflow_ref;
-        if branch.is_empty()
-            || branch.len() > 200
-            || branch.starts_with("refs/")
-            || branch.ends_with('.')
-            || branch.ends_with('/')
-            || branch.contains("..")
-            || branch.contains("//")
-            || branch
-                .split('/')
-                .any(|p| p.is_empty() || p.starts_with('.') || p.ends_with(".lock"))
-            || !branch
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"-_/.".contains(&c))
-            || hex_lower(branch, 40)
-        {
-            return Err("invalid staging branch");
-        }
+        validate_workflow_path(&self.workflow_path)?;
+        validate_branch(&self.workflow_ref)?;
         if !hex_lower(&self.approved_commit_sha, 40) || !hex_lower(&self.workflow_sha256, 64) {
             return Err("invalid staging commit or workflow digest");
         }

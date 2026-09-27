@@ -76,7 +76,8 @@ pub fn run(action: &Action) -> Result<Value, String> {
                     evaluators: vec![],
                     authority: Authority {
                         operation: OPERATION.into(),
-                        allowed_statuses: legacy.allowed_statuses,
+                        allowed_statuses: Some(legacy.allowed_statuses),
+                        workflows: None,
                         max_resources: legacy.max_resources,
                         max_attempts: legacy.max_attempts,
                         max_duration: format!("{}s", legacy.max_scope_seconds),

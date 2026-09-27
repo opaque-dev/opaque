@@ -1,7 +1,11 @@
-//! Opt-in typed support workflow. Authorization stays in this broker: a paired
-//! reviewer signs issuance or an exact prepared action; immutable startup policy,
-//! current identity and enrollment are fenced through durable dispatch claims.
+//! Opt-in typed scope workflow with two fixed operation kinds: support-case
+//! status writes and GitHub Actions `workflow_dispatch`. Authorization stays in
+//! this broker: a paired reviewer signs issuance or an exact prepared action;
+//! immutable startup policy, current identity and enrollment are fenced through
+//! durable dispatch claims.
 pub(crate) mod connector;
+pub(crate) mod custody;
+pub(crate) mod dispatch;
 use crate::identity::IdentityRuntime;
 use connector::{Connector, Status};
 use opaque_approval::{
@@ -9,6 +13,7 @@ use opaque_approval::{
     scope_review::{CurrentAuthority, RoundState, ScopeReviewStore},
 };
 use opaque_bounded_work::scope_store::{AuthorityGuard, ScopeStore};
+use opaque_core::authority_policy::WorkflowTarget;
 use opaque_core::{
     identity::{PrincipalContext, PrincipalId, Role, now_unix},
     proto::{Request, Response},
@@ -29,6 +34,11 @@ pub struct Config {
     /// scope_workflow policy digests exactly; agents cannot deserialize this.
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub authority_policy: Option<opaque_core::authority_policy::CompiledPolicy>,
+    /// Complete dispatch-target set for the `github.workflow.dispatch` kind. Set
+    /// only by the sealed manifest loader; the legacy TOML section stays
+    /// support-only and its policy digest is unchanged when this is None.
+    #[serde(skip_deserializing, default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<Vec<WorkflowTarget>>,
     pub profile: connector::Profile,
     pub reviewer_id: String,
     pub reviewer_public_key: String,
@@ -61,11 +71,65 @@ fn resources() -> u32 {
 fn yes() -> bool {
     true
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Support,
+    Dispatch,
+}
+impl Kind {
+    fn policy_contract(self) -> &'static str {
+        match self {
+            Self::Support => "opaque.support.policy.v1",
+            Self::Dispatch => "opaque.github-dispatch.policy.v1",
+        }
+    }
+}
+impl Config {
+    fn kind(&self) -> Kind {
+        if self.workflows.is_some() {
+            Kind::Dispatch
+        } else {
+            Kind::Support
+        }
+    }
+}
+/// One fixed connector per broker. Each variant owns its custody-bound client
+/// and provider-profile digest; the runtime never mixes their resources.
+enum Adapter {
+    Support(Connector),
+    Dispatch(dispatch::Connector),
+}
+impl Adapter {
+    fn digest(&self) -> &str {
+        match self {
+            Self::Support(c) => &c.digest,
+            Self::Dispatch(c) => &c.digest,
+        }
+    }
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Support(_) => connector::OPERATION,
+            Self::Dispatch(_) => dispatch::OPERATION,
+        }
+    }
+    fn field(&self) -> &'static str {
+        match self {
+            Self::Support(_) => "status",
+            Self::Dispatch(_) => dispatch::FIELD,
+        }
+    }
+}
+/// The exact provider write an admitted action performs, typed per kind before
+/// any ledger transaction so a malformed action never reaches the claim.
+enum Write {
+    Status(Status),
+    Dispatch(WorkflowTarget),
+}
 pub struct Runtime {
     config: Config,
     owner: AuthorityOwner,
     policy_digest: String,
-    connector: Connector,
+    adapter: Adapter,
     ledger: ScopeStore,
     reviews: ScopeReviewStore,
     identity: Arc<IdentityRuntime>,
@@ -77,6 +141,8 @@ pub struct Runtime {
 #[serde(deny_unknown_fields)]
 struct Plan {
     resources: Vec<String>,
+    /// Support kind only. Dispatch scopes derive their `ref` field from resources.
+    #[serde(default)]
     statuses: Vec<Status>,
     expires_in_secs: i64,
     max_attempts: u64,
@@ -92,7 +158,9 @@ struct Prepare {
     scope_id: String,
     issuance_round_id: String,
     resource: String,
-    status: Status,
+    /// Required for the support kind; must be absent for workflow dispatch.
+    #[serde(default)]
+    status: Option<Status>,
     request_id: String,
 }
 #[derive(Deserialize)]
@@ -125,10 +193,29 @@ impl Runtime {
             || !(1..=86400).contains(&config.max_scope_seconds)
             || !(1..=10000).contains(&config.max_attempts)
             || !(1..=100).contains(&config.max_resources)
-            || config.allowed_statuses.is_empty()
-            || config.allowed_statuses.len() > 3
         {
             return Err("invalid scope workflow limits".into());
+        }
+        let kind = config.kind();
+        match (kind, &config.workflows) {
+            (Kind::Support, _) => {
+                if config.allowed_statuses.is_empty() || config.allowed_statuses.len() > 3 {
+                    return Err("invalid scope workflow limits".into());
+                }
+            }
+            (Kind::Dispatch, Some(targets)) => {
+                if !config.allowed_statuses.is_empty()
+                    || targets.is_empty()
+                    || targets.len() > opaque_core::authority_policy::MAX_WORKFLOWS
+                    || !targets.windows(2).all(|w| w[0] < w[1])
+                {
+                    return Err("invalid scope workflow dispatch targets".into());
+                }
+                for target in targets {
+                    target.validate()?;
+                }
+            }
+            (Kind::Dispatch, None) => return Err("invalid scope workflow dispatch targets".into()),
         }
         let reviewer =
             PrincipalId::parse(&config.reviewer_id).map_err(|_| "invalid scope reviewer")?;
@@ -147,14 +234,17 @@ impl Runtime {
         pairing
             .workstation_device(&device.device_id)
             .map_err(|_| "scope workstation unavailable")?;
-        let connector = Connector::new(&config.profile)?;
+        let adapter = match kind {
+            Kind::Support => Adapter::Support(Connector::new(&config.profile)?),
+            Kind::Dispatch => Adapter::Dispatch(dispatch::Connector::new(&config.profile)?),
+        };
         let owner = AuthorityOwner {
             tenant_id: tenant.tenant_id.to_string(),
             broker_id: pairing.server_id().into(),
             generation: config.generation.to_string(),
         };
         let policy_digest = connector::hash(
-            &json!({"contract":"opaque.support.policy.v1","config":config,"tenant_binding":tenant}),
+            &json!({"contract":kind.policy_contract(),"config":config,"tenant_binding":tenant}),
         )?;
         let key = crate::identity::keys::load_or_create_signing_key(&root.join("scope-review.key"))
             .map_err(|_| "scope signing custody unavailable")?;
@@ -171,7 +261,7 @@ impl Runtime {
             config,
             owner,
             policy_digest,
-            connector,
+            adapter,
             ledger,
             reviews,
             identity,
@@ -240,8 +330,8 @@ impl Runtime {
             || grant.issuer != grant.subject
             || grant.parent_id.is_some()
             || grant.delegations_remaining != 0
-            || grant.operation != connector::OPERATION
-            || grant.provider_profile_digest != self.connector.digest
+            || grant.operation != self.adapter.operation()
+            || grant.provider_profile_digest != self.adapter.digest()
             || grant.requirements.policy_digest != self.policy_digest
             || !grant.requirements.evaluator_checks.is_empty()
             || grant.requirements.minimum_approval != expected
@@ -249,18 +339,75 @@ impl Runtime {
             || grant.max_distinct_resources > self.config.max_resources
             || grant.expires_at - grant.not_before > self.config.max_scope_seconds
             || grant.fields.len() != 1
-            || grant.fields[0].field != "status"
-            || grant.fields[0]
-                .allowed_values
-                .iter()
-                .any(|s| !self.config.allowed_statuses.iter().any(|t| t.as_str() == s))
+            || grant.fields[0].field != self.adapter.field()
         {
-            return Err("scope does not satisfy current support policy".into());
+            return Err("scope does not satisfy current scope policy".into());
         }
-        for id in &grant.resources {
-            connector::identifier(id)?;
+        match (&self.adapter, &self.config.workflows) {
+            (Adapter::Support(_), _) => {
+                if grant.fields[0]
+                    .allowed_values
+                    .iter()
+                    .any(|s| !self.config.allowed_statuses.iter().any(|t| t.as_str() == s))
+                {
+                    return Err("scope does not satisfy current support policy".into());
+                }
+                for id in &grant.resources {
+                    connector::identifier(id)?;
+                }
+            }
+            (Adapter::Dispatch(_), Some(targets)) => {
+                // Every resource must be a policy target, and the single `ref`
+                // constraint must be exactly the refs of those resources.
+                let mut refs = Vec::with_capacity(grant.resources.len());
+                for resource in &grant.resources {
+                    let target = WorkflowTarget::parse(resource)?;
+                    if targets.binary_search(&target).is_err() {
+                        return Err("workflow target is outside the configured policy".into());
+                    }
+                    refs.push(target.git_ref);
+                }
+                refs.sort();
+                refs.dedup();
+                if grant.fields[0].allowed_values != refs {
+                    return Err("scope does not satisfy current dispatch policy".into());
+                }
+            }
+            (Adapter::Dispatch(_), None) => {
+                return Err("scope does not satisfy current dispatch policy".into());
+            }
         }
         Ok(())
+    }
+    /// Resources are parsed per kind before any grant exists, so a resource
+    /// outside the configured targets never reaches review or a provider.
+    fn fields(&self, plan: &Plan) -> Result<Vec<FieldConstraint>, String> {
+        match &self.adapter {
+            Adapter::Support(_) => {
+                if plan.statuses.is_empty() {
+                    return Err("scope request exceeds configured bounds".into());
+                }
+                Ok(vec![FieldConstraint {
+                    field: "status".into(),
+                    allowed_values: plan.statuses.iter().map(|s| s.as_str().into()).collect(),
+                }])
+            }
+            Adapter::Dispatch(_) => {
+                if !plan.statuses.is_empty() {
+                    return Err("statuses do not apply to workflow dispatch scopes".into());
+                }
+                let mut refs = Vec::with_capacity(plan.resources.len());
+                for resource in &plan.resources {
+                    refs.push(WorkflowTarget::parse(resource)?.git_ref);
+                }
+                refs.sort();
+                refs.dedup();
+                Ok(vec![FieldConstraint {
+                    field: dispatch::FIELD.into(),
+                    allowed_values: refs,
+                }])
+            }
+        }
     }
     fn issuance(
         &self,
@@ -292,10 +439,10 @@ impl Runtime {
             || !(1..=self.config.max_attempts).contains(&plan.max_attempts)
             || plan.resources.is_empty()
             || plan.resources.len() > self.config.max_resources as usize
-            || plan.statuses.is_empty()
         {
             return Err("scope request exceeds configured bounds".into());
         }
+        let fields = self.fields(&plan)?;
         let selected_resources = plan.resources.len() as u32;
         let now = now_unix();
         let id = uuid::Uuid::new_v4().to_string();
@@ -307,17 +454,10 @@ impl Runtime {
             owner: self.owner.clone(),
             issuer: context.sub.to_string(),
             subject: context.sub.to_string(),
-            operation: connector::OPERATION.into(),
-            provider_profile_digest: self.connector.digest.clone(),
+            operation: self.adapter.operation().into(),
+            provider_profile_digest: self.adapter.digest().into(),
             resources: plan.resources,
-            fields: vec![FieldConstraint {
-                field: "status".into(),
-                allowed_values: plan
-                    .statuses
-                    .into_iter()
-                    .map(|s| s.as_str().into())
-                    .collect(),
-            }],
+            fields,
             not_before: now,
             expires_at: now + plan.expires_in_secs,
             delegations_remaining: 0,
@@ -376,8 +516,22 @@ impl Runtime {
         input: &Prepare,
         context: &PrincipalContext,
     ) -> Result<(PreparedAction, ReviewEvidence), String> {
-        connector::identifier(&input.resource)?;
         connector::identifier(&input.request_id)?;
+        // Typed per kind before any grant lookup: a malformed or foreign resource
+        // string is refused here, with no ledger, review or provider access.
+        let requested = match (&self.adapter, input.status) {
+            (Adapter::Support(_), Some(status)) => {
+                connector::identifier(&input.resource)?;
+                Write::Status(status)
+            }
+            (Adapter::Support(_), None) => return Err("support status required".into()),
+            (Adapter::Dispatch(_), None) => {
+                Write::Dispatch(WorkflowTarget::parse(&input.resource)?)
+            }
+            (Adapter::Dispatch(_), Some(_)) => {
+                return Err("statuses do not apply to workflow dispatch scopes".into());
+            }
+        };
         let grant = self.grant(&input.scope_id, context.sub.as_str())?;
         self.authority(context.sub.as_str(), Some(context), |current| {
             let receipt = self.issuance(&input.issuance_round_id, current, now_unix())?;
@@ -385,23 +539,37 @@ impl Runtime {
                 .revalidate_scope(&grant, &receipt, current, now_unix())
                 .map_err(|e| e.to_string())
         })?;
+        let value = match &requested {
+            Write::Status(status) => status.as_str().to_owned(),
+            Write::Dispatch(target) => target.git_ref.clone(),
+        };
         if !grant.resources.contains(&input.resource)
-            || !grant.fields[0]
-                .allowed_values
-                .iter()
-                .any(|v| v == input.status.as_str())
+            || !grant.fields[0].allowed_values.contains(&value)
         {
-            return Err("proposed status or case is outside scope".into());
+            return Err("proposed change or resource is outside scope".into());
         }
-        let before = self.connector.read(&input.resource).await?;
+        let (resource_version, before) = match (&self.adapter, &requested) {
+            (Adapter::Support(connector), Write::Status(_)) => {
+                let before = connector.read(&input.resource).await?;
+                (
+                    before.version,
+                    vec![FieldValue {
+                        field: "status".into(),
+                        value: before.status.as_str().into(),
+                    }],
+                )
+            }
+            (Adapter::Dispatch(connector), Write::Dispatch(target)) => {
+                let before = connector.read(target).await?;
+                (before.head_sha.clone(), before.fields())
+            }
+            _ => return Err("invalid scoped action".into()),
+        };
         let evidence = ReviewEvidence {
-            provider_profile_digest: self.connector.digest.clone(),
-            resource: before.id.clone(),
-            resource_version: before.version.clone(),
-            fields: vec![FieldValue {
-                field: "status".into(),
-                value: before.status.as_str().into(),
-            }],
+            provider_profile_digest: self.adapter.digest().into(),
+            resource: input.resource.clone(),
+            resource_version: resource_version.clone(),
+            fields: before,
         }
         .canonicalized()
         .map_err(|e| e.to_string())?;
@@ -413,13 +581,13 @@ impl Runtime {
             scope_digest: grant.digest().map_err(|e| e.to_string())?,
             owner: self.owner.clone(),
             subject: context.sub.to_string(),
-            operation: connector::OPERATION.into(),
-            provider_profile_digest: self.connector.digest.clone(),
+            operation: self.adapter.operation().into(),
+            provider_profile_digest: self.adapter.digest().into(),
             resource: input.resource.clone(),
-            resource_version: before.version.clone(),
+            resource_version,
             fields: vec![FieldValue {
-                field: "status".into(),
-                value: input.status.as_str().into(),
+                field: self.adapter.field().into(),
+                value,
             }],
             evidence_digest: evidence.digest().map_err(|e| e.to_string())?,
         }
@@ -493,12 +661,23 @@ impl Runtime {
     ) -> Result<Value, String> {
         if scope.subject != context.sub.as_str()
             || action.fields.len() != 1
-            || action.fields[0].field != "status"
+            || action.fields[0].field != self.adapter.field()
         {
             return Err("invalid scoped action".into());
         }
-        let status: Status = serde_json::from_value(json!(action.fields[0].value))
-            .map_err(|_| "unsupported support status")?;
+        let write = match &self.adapter {
+            Adapter::Support(_) => Write::Status(
+                serde_json::from_value(json!(action.fields[0].value))
+                    .map_err(|_| "unsupported support status")?,
+            ),
+            Adapter::Dispatch(_) => {
+                let target = WorkflowTarget::parse(&action.resource)?;
+                if target.git_ref != action.fields[0].value {
+                    return Err("invalid scoped action".into());
+                }
+                Write::Dispatch(target)
+            }
+        };
         let existing = self.authority(context.sub.as_str(), Some(context), |current| {
             let now = now_unix();
             let issuance = self.issuance(issuance_id, current, now)?;
@@ -561,15 +740,24 @@ impl Runtime {
         if let Some(existing) = existing {
             return Ok(existing);
         }
-        let outcome = self
-            .connector
-            .write(
-                &action.resource,
-                &action.resource_version,
-                status,
-                &action.action_id,
-            )
-            .await;
+        let outcome = match (&self.adapter, &write) {
+            (Adapter::Support(connector), Write::Status(status)) => {
+                connector
+                    .write(
+                        &action.resource,
+                        &action.resource_version,
+                        *status,
+                        &action.action_id,
+                    )
+                    .await
+            }
+            (Adapter::Dispatch(connector), Write::Dispatch(target)) => {
+                connector.write(target, &action.resource_version).await
+            }
+            // The claim is consumed; record the attempt as unknown rather than
+            // leave a reserved row, exactly like a lost acknowledgment.
+            _ => opaque_bounded_work::scope_store::Outcome::Unknown,
+        };
         Ok(json!(
             self.ledger
                 .finish(&action.action_id, outcome, now_unix())
@@ -751,10 +939,14 @@ pub async fn handle(
     let correlation = uuid::Uuid::new_v4();
     let request_hash = connector::hash(&json!({"method":request.method,"params":request.params}))
         .unwrap_or_default();
+    let operation = state
+        .scope_workflow
+        .as_ref()
+        .map_or(connector::OPERATION, |runtime| runtime.adapter.operation());
     state.audit.emit(
         AuditEvent::new(AuditEventKind::RequestReceived)
             .with_request_id(correlation)
-            .with_operation(connector::OPERATION)
+            .with_operation(operation)
             .with_request_hash(request_hash)
             .with_detail(
                 "scope workflow RPC received; scope ledger retains authority and dispatch outcomes",
@@ -777,7 +969,7 @@ pub async fn handle(
         Ok(value) => Response::ok(request.id, value),
         Err(error) => {
             tracing::warn!(method=%request.method,error=%error,"scope request denied or unavailable");
-            state.audit.emit(AuditEvent::new(AuditEventKind::OperationFailed).with_request_id(correlation).with_operation(connector::OPERATION).with_outcome("unavailable").with_detail("scope workflow denied or unavailable; inspect retained action outcome before any retry"));
+            state.audit.emit(AuditEvent::new(AuditEventKind::OperationFailed).with_request_id(correlation).with_operation(operation).with_outcome("unavailable").with_detail("scope workflow denied or unavailable; inspect retained action outcome before any retry"));
             let _ = state.enclave.confirm_audit(true).await;
             Response::err(
                 Some(request.id),
@@ -895,6 +1087,16 @@ impl ScopeReviewService for Runtime {
                 .receipt(id, current, now_unix())
                 .map_err(|e| e.to_string())
         })
+    }
+}
+
+#[cfg(test)]
+impl Runtime {
+    fn support(&self) -> &Connector {
+        match &self.adapter {
+            Adapter::Support(connector) => connector,
+            Adapter::Dispatch(_) => panic!("fixture is not a support runtime"),
+        }
     }
 }
 

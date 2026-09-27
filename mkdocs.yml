@@ -131,7 +131,7 @@ nav:
           - Web Dashboard: web-dashboard.md
           - Audit Analytics: audit-analytics.md
           - Building on the Core: reusable-core.md
-          - Scoped Support Workflow: scoped-authority.md
+          - Scoped Authority Workflow: scoped-authority.md
           - Reproduce Scope Recovery: scope-recovery.md
           - Why Uncertain Writes Stay Charged: uncertain-agent-writes.md
           - Authority Policy Manifests: authority-policy.md

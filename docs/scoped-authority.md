@@ -1,18 +1,20 @@
-# Run a bounded support-case workflow
+# Run a bounded scope workflow
 
 Operator-selected limits can also use a pinned [AuthorityPolicy YAML/JSON manifest](authority-policy.md).
-Existing `[scope_workflow]` TOML remains supported.
+Existing `[scope_workflow]` TOML remains supported for the support-case kind.
 
-The opt-in scope workflow lets a person approve a finite set of support cases,
-allowed statuses, expiry and attempt budget. The broker prepares each status
-change against the provider's current resource version, checks current authority,
-and records one dispatch attempt. The default also requires a separate human
-review for each exact change.
+The opt-in scope workflow lets a person approve a finite set of resources, the
+values an agent may write to them, an expiry and an attempt budget. The broker
+prepares each action against the provider's current resource version, checks
+current authority, and records one dispatch attempt. The default also requires a
+separate human review for each exact action. One broker runs one operation kind:
+support-case status changes against the fixed REST contract below, or a
+[GitHub Actions staging dispatch](#dispatch-a-github-actions-staging-workflow).
 
-This workflow is unreleased. The connector implements the fixed REST contract
-below; it is not a Zendesk or Salesforce adapter. Automated tests use a synthetic
-provider and synthetic reviewer signatures. They do not certify a live provider,
-native human presence, or production capacity.
+This workflow is unreleased. The support connector implements the fixed REST
+contract below; it is not a Zendesk or Salesforce adapter. Automated tests use
+synthetic providers and synthetic reviewer signatures. They do not certify a live
+provider, native human presence, or production capacity.
 
 ## Prerequisites
 
@@ -91,10 +93,64 @@ write responses and transport uncertainty become `unknown`.
 A production adapter must qualify this contract against its selected API before
 live use. No caller can select an arbitrary URL, method, header or request body.
 
+## Dispatch a GitHub Actions staging workflow
+
+Pin a `github.workflow.dispatch` [manifest](authority-policy.md#operation-kinds)
+whose `workflows` list names every repository, workflow file and branch this
+broker may ever dispatch, and point `[authority_policy.profile]` at the GitHub
+API with a broker-owned token file. The broker uses the same GitHub protocol
+module as the [`StagingRelease` task family](bounded-work.md); it adds no second
+GitHub client. Reviewer enrollment, sealed configuration and identity
+requirements are unchanged.
+
+A scope names targets as `{repository}:{path}:{ref}` and carries no statuses:
+
+```json
+{"resources":["example-org/service:.github/workflows/staging.yml:main"],"expires_in_secs":900,"max_attempts":2}
+```
+
+A target outside the manifest's `workflows` list is refused at `scope plan`, so
+another repository, a production workflow or another branch never reaches the
+reviewer. The single approved field is `ref`, whose only allowed values are the
+branches of the approved resources; a `scope prepare` for a resource outside the
+approved scope is refused before any GitHub request:
+
+```json
+{"scope_id":"SCOPE_ID","issuance_round_id":"ISSUANCE_ROUND_ID","resource":"example-org/service:.github/workflows/staging.yml:main","request_id":"staging-2026-09-26-1"}
+```
+
+Before the exact-action review the broker performs three bounded reads: the
+workflow must be active at exactly that path, the branch must resolve to a head
+commit, and no tag may share the branch name. The signed review shows
+`head_sha`, `branch_protected`, `workflow_id` and `workflow_state` as before
+state, the head commit as the resource version, and `ref` as the written field.
+
+`scope execute` re-reads the branch head and refuses to send if it moved since
+review; that outcome is `rejected` and nothing was dispatched. GitHub does not
+enforce this precondition, so a head that moves between the re-read and the
+POST is not caught. The one write is
+`POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches` with body
+`{"ref":"main"}` and no inputs. GitHub answers `204` with no run id: the broker
+records `api_accepted`, which is an acknowledgment, not a run, a deployment or a
+success. A `4xx` means GitHub validated and refused, recorded as `rejected`.
+
+Every other answer, including `5xx`, a timeout and a closed connection, is
+`unknown`. The attempt stays charged and replaying the round returns the
+retained record without another POST. Because `workflow_dispatch` has no
+idempotency key, an `unknown` dispatch may or may not have started a run.
+`opaque scope outcome` states this on stderr for an unknown dispatch; inspect
+the repository's Actions runs before requesting a new dispatch. Correlating a
+run to an action is by branch and time only, because the broker sends no
+inputs; the task family's `run-name` correlation does not apply here.
+
+Automated tests cover this path against a synthetic HTTPS GitHub. No dispatch
+against real GitHub has been performed from this workflow; a live dispatch
+remains unverified.
+
 ## Review and execute
 
 Run the `opaque scope` commands inside the authenticated delegation. Create a
-scope manifest, for example:
+scope manifest, for example (support kind; the dispatch kind omits `statuses`):
 
 ```json
 {"resources":["case-101","case-102"],"statuses":["resolved"],"expires_in_secs":900,"max_attempts":2}

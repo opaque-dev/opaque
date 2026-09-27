@@ -4,6 +4,76 @@ fn fixture(dir: &std::path::Path) -> PathBuf {
     std::fs::write(&file,serde_json::to_vec(&json!({"apiVersion":API_VERSION,"kind":KIND,"metadata":{"name":"cases","namespace":"support"},"spec":{"tenantRef":"example","connectorRef":"support","authority":{"operation":OPERATION,"allowedStatuses":["closed"],"maxResources":2,"maxAttempts":10,"maxDuration":"1h"},"approval":{"scope":"Required","reviewerRef":"ops"}}})).unwrap()).unwrap();
     file
 }
+fn example(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/authority-policy")
+        .join(name)
+}
+#[test]
+fn shipped_examples_compile_for_both_operation_kinds_and_never_mix_their_fields() {
+    let support = run(&Action::Compile {
+        file: example("support.yaml"),
+    })
+    .unwrap();
+    let dispatch = run(&Action::Compile {
+        file: example("staging-dispatch.yaml"),
+    })
+    .unwrap();
+    assert_eq!(
+        support["policy"]["spec"]["authority"]["operation"],
+        "support.case.setStatus"
+    );
+    assert!(
+        support["policy"]["spec"]["authority"]
+            .get("workflows")
+            .is_none()
+    );
+    assert_eq!(
+        dispatch["policy"]["spec"]["authority"]["operation"],
+        "github.workflow.dispatch"
+    );
+    assert!(
+        dispatch["policy"]["spec"]["authority"]
+            .get("allowedStatuses")
+            .is_none()
+    );
+    assert_eq!(
+        dispatch["policy"]["spec"]["authority"]["workflows"],
+        json!([{"repository":"example-org/service","path":".github/workflows/staging.yml","ref":"main"}])
+    );
+    assert_eq!(
+        dispatch["policy"]["spec"]["approval"]["action"],
+        "EveryAction"
+    );
+    assert_ne!(support["digest"], dispatch["digest"]);
+    assert_eq!(
+        run(&Action::Validate {
+            file: example("staging-dispatch.yaml")
+        })
+        .unwrap()["digest"],
+        dispatch["digest"]
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mixed = dir.path().join("mixed.json");
+    let mut value = dispatch["policy"].clone();
+    value["spec"]["authority"]["allowedStatuses"] = json!(["closed"]);
+    std::fs::write(&mixed, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(run(&Action::Validate { file: mixed }).is_err());
+    let schema = run(&Action::Schema).unwrap();
+    let kinds: Vec<_> = schema["properties"]["spec"]["properties"]["authority"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|branch| branch["properties"]["operation"]["enum"][0].clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            json!("support.case.setStatus"),
+            json!("github.workflow.dispatch")
+        ]
+    );
+}
 #[test]
 fn offline_commands_return_stable_compiler_contract_without_creating_other_files() {
     let dir = tempfile::tempdir().unwrap();

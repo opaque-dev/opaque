@@ -1,19 +1,75 @@
 # Validate a versioned authority policy
 
-The unreleased `AuthorityPolicy` v1alpha1 format describes finite support-case
-status authority. Validation and compilation run offline and create no grants,
-approvals, seals, credentials or ledger records.
+The unreleased `AuthorityPolicy` v1alpha1 format describes finite authority for
+one operation kind: support-case status changes or GitHub Actions
+`workflow_dispatch`. Validation and compilation run offline and create no
+grants, approvals, seals, credentials or ledger records.
 
 ```sh
 opaque authority-policy validate examples/authority-policy/support.yaml --json
-opaque authority-policy compile examples/authority-policy/support.yaml --json
+opaque authority-policy compile examples/authority-policy/staging-dispatch.yaml --json
 opaque authority-policy schema
 ```
 
-The example at `examples/authority-policy/support.yaml` selects named tenant,
-connector and reviewer references. Its `support.case.setStatus` operation maps
-to the existing `support.case.set_status` broker operation. A manifest cannot
-supply an endpoint, credential, principal or signing key.
+Both examples select named tenant, connector and reviewer references. A manifest
+cannot supply an endpoint, credential, principal or signing key. Validating the
+dispatch example with a build of this branch prints:
+
+```json
+{
+  "digest": "7d16e99044c5ed63f71f77841701840d9cb08818707f7fc5e2f280b01865a790",
+  "identity": {
+    "apiVersion": "policy.opaque.dev/v1alpha1",
+    "connectorRef": "github",
+    "kind": "AuthorityPolicy",
+    "name": "staging-dispatch",
+    "namespace": "release",
+    "reviewerRef": "release-approver",
+    "tenantRef": "example"
+  },
+  "schemaVersion": 1,
+  "valid": true
+}
+```
+
+## Operation kinds
+
+`spec.authority.operation` selects the kind. Each kind has exactly one
+kind-specific field; a manifest that carries the other kind's field fails
+validation instead of being pruned, with exit status 2:
+
+```text
+allowedStatuses belongs to support.case.setStatus and workflows to github.workflow.dispatch; supply exactly the selected kind's field
+```
+
+| `operation` | Broker operation | Kind field | Scope resource | Written field |
+|---|---|---|---|---|
+| `support.case.setStatus` | `support.case.set_status` | `allowedStatuses`: 1 to 3 of `open`, `resolved`, `closed` | case identifier | `status` |
+| `github.workflow.dispatch` | `github.dispatch_staging_workflow` | `workflows`: 1 to 100 targets of `repository`, `path`, `ref` | `{repository}:{path}:{ref}` | `ref` |
+
+For the dispatch kind, `workflows` is the complete set of targets any scope may
+name. A `scope plan` that names a repository, workflow file or branch outside it
+is refused before a review round exists. The example at
+`examples/authority-policy/staging-dispatch.yaml` pins one target:
+
+```yaml
+authority:
+  operation: github.workflow.dispatch
+  workflows:
+    - repository: example-org/service
+      path: .github/workflows/staging.yml
+      ref: main
+  maxResources: 1
+  maxAttempts: 5
+  maxDuration: 1h
+```
+
+`repository` is `owner/repo`. `path` is one file directly under
+`.github/workflows/` ending in `.yml` or `.yaml`. `ref` is a branch name: never a
+tag, a 40-hex commit, a `refs/` path or a name containing `..`. The scope
+resource string joins the three with colons, which none of them may contain.
+[Governing a staging dispatch](scoped-authority.md#dispatch-a-github-actions-staging-workflow)
+describes what the broker reads, sends and records for this kind.
 
 `approval.scope: Required` is mandatory. `approval.action` defaults to
 `EveryAction`; `WithinApprovedScope` explicitly permits automatic dispatch only
@@ -29,10 +85,14 @@ tags, merge keys, complex keys and unknown fields are rejected. YAML plain
 scalars use JSON boolean/number/null interpretation; quote references that look
 like those values. Names, namespaces and references are lowercase DNS labels,
 at most 63 bytes. Allowed statuses are `open`, `resolved` and `closed`;
-duplicates are rejected. Resource limits are 1–100 and attempts 1–10,000.
-`maxDuration` accepts a positive whole `s`, `m` or `h` duration up to 24 hours.
+duplicate statuses and duplicate workflow targets are rejected. Resource limits
+are 1 to 100 and attempts 1 to 10,000. `maxDuration` accepts a positive whole
+`s`, `m` or `h` duration up to 24 hours.
 
-The compiler fills defaults, sorts statuses and normalizes duration to seconds.
+The compiler fills defaults, sorts statuses or workflow targets, and normalizes
+duration to seconds. The portable JSON Schema expresses the two kinds as a
+`oneOf`; git-specific refusals such as `refs/` prefixes, `..` and bare commit
+SHAs are compiler-only, so the compiler remains authoritative.
 Its lowercase hex digest is SHA-256 over `opaque.authority-policy.v1`, one NUL
 byte, then compact UTF-8 JSON of the canonical `policy` with every object's keys
 sorted lexicographically and no whitespace. There are no floating-point policy
@@ -66,6 +126,15 @@ generation = 1
 endpoint = "https://support.example.invalid/v1/"
 token_file = "/var/lib/opaque/private/support.token"
 ```
+
+For the `github.workflow.dispatch` kind the same section applies with the GitHub
+API as the profile: `endpoint = "https://api.github.com/"` (or a GitHub
+Enterprise Server `https://HOST/api/v3/` base) and a `token_file` holding a token
+that can read the target repository's branches and workflows and create
+`workflow_dispatch` events for it. The broker loads that token, binds it into the
+provider profile digest under a dispatch-specific domain, and never exposes it to
+the agent. The legacy `[scope_workflow]` TOML section stays support-only; the
+dispatch kind is configured through a manifest.
 
 The local profile and enrolled reviewer remain trusted configuration, bound into
 the runtime policy digest. Startup still requires native approval, required

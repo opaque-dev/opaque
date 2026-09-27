@@ -3,7 +3,8 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 #[derive(Debug, Subcommand)]
 pub enum Action {
-    /// Request a human-reviewed scope. JSON: resources, statuses, expires_in_secs, max_attempts.
+    /// Request a human-reviewed scope. JSON: resources, expires_in_secs, max_attempts,
+    /// plus statuses for the support kind.
     Plan {
         #[arg(long)]
         manifest: PathBuf,
@@ -12,7 +13,7 @@ pub enum Action {
     Activate {
         round_id: String,
     },
-    /// Prepare an exact status update from a broker-read case version and request review.
+    /// Prepare one exact action from broker-read provider state and request review.
     Prepare {
         #[arg(long)]
         manifest: PathBuf,
@@ -44,6 +45,29 @@ pub enum Action {
     },
     /// Read a bounded historical projection; requires delegated auditor or admin role.
     Snapshot,
+}
+/// An `unknown` outcome is a charged attempt whose provider effect is not known.
+/// Say so plainly for every scope result that carries a state; the GitHub
+/// `workflow_dispatch` call has no idempotency key, so a resend could run twice.
+pub fn unknown_outcome_note(method: &str, result: Option<&Value>) -> Option<String> {
+    if !matches!(method, "scope_outcome" | "scope_execute" | "scope_run") {
+        return None;
+    }
+    let result = result?;
+    if result.get("state").and_then(Value::as_str) != Some("unknown") {
+        return None;
+    }
+    let mut note = String::from(
+        "state unknown: the attempt is charged and the provider may or may not have performed it; nothing was or will be resent.",
+    );
+    if result.pointer("/action/operation").and_then(Value::as_str)
+        == Some("github.dispatch_staging_workflow")
+    {
+        note.push_str(
+            " GitHub workflow_dispatch returns no run id and has no idempotency key, so a run may exist: inspect the repository's Actions runs before requesting a new dispatch.",
+        );
+    }
+    Some(note)
 }
 pub fn params(action: Action) -> Result<(&'static str, Value), String> {
     use std::io::Read;
@@ -163,6 +187,30 @@ mod tests {
         ] {
             assert!(ScopeCli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn unknown_outcomes_are_stated_plainly_and_dispatch_names_the_missing_idempotency_key() {
+        let dispatch =
+            json!({"state":"unknown","action":{"operation":"github.dispatch_staging_workflow"}});
+        let support = json!({"state":"unknown","action":{"operation":"support.case.set_status"}});
+        for method in ["scope_outcome", "scope_execute", "scope_run"] {
+            let note = unknown_outcome_note(method, Some(&dispatch)).unwrap();
+            assert!(note.contains("may or may not have performed"));
+            assert!(note.contains("no idempotency key"));
+            assert!(note.contains("Actions runs"));
+            let note = unknown_outcome_note(method, Some(&support)).unwrap();
+            assert!(note.contains("may or may not have performed"));
+            assert!(!note.contains("idempotency"));
+        }
+        assert!(
+            unknown_outcome_note("scope_outcome", Some(&json!({"state":"api_accepted"}))).is_none()
+        );
+        assert!(
+            unknown_outcome_note("scope_outcome", Some(&json!({"state":"rejected"}))).is_none()
+        );
+        assert!(unknown_outcome_note("scope_get", Some(&dispatch)).is_none());
+        assert!(unknown_outcome_note("scope_outcome", None).is_none());
     }
 
     #[test]

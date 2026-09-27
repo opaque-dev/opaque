@@ -1,17 +1,20 @@
 //! Fixed support-case status protocol. Trusted configuration selects the server;
 //! agent input cannot select a URL, header, credential, method, or arbitrary body.
+use super::custody::{self, Contract};
 use opaque_bounded_work::scope_store::Outcome;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    fs::OpenOptions,
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::PathBuf,
-    time::Duration,
-};
+use std::path::PathBuf;
 
 pub const OPERATION: &str = "support.case.set_status";
+const CONTRACT: Contract = Contract {
+    noun: "support",
+    contract: "opaque.support.case.v1",
+    profile_domain: "opaque.support.provider-profile",
+    credential_domain: "opaque.support.credential.v1",
+};
+/// Shared by every scope connector: the sealed profile selects the HTTPS base,
+/// the broker-owned credential file and optional operator PEM trust roots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
@@ -70,139 +73,12 @@ pub fn hash(value: &impl Serialize) -> Result<String, String> {
 }
 impl Connector {
     pub fn new(profile: &Profile) -> Result<Self, String> {
-        let endpoint =
-            reqwest::Url::parse(&profile.endpoint).map_err(|_| "invalid support endpoint")?;
-        if endpoint.scheme() != "https"
-            || endpoint.host_str().is_none()
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-            || !endpoint.path().ends_with('/')
-        {
-            return Err("support endpoint must be a fixed HTTPS base ending in slash".into());
-        }
-        if !profile.token_file.is_absolute() {
-            return Err("support credential requires an absolute private path".into());
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-            .open(&profile.token_file)
-            .map_err(|_| "support credential unavailable")?;
-        let meta = file
-            .metadata()
-            .map_err(|_| "support credential unavailable")?;
-        // SAFETY: geteuid has no preconditions.
-        if !meta.is_file()
-            || meta.uid() != unsafe { libc::geteuid() }
-            || meta.mode() & 0o077 != 0
-            || meta.nlink() != 1
-            || meta.len() > 4096
-        {
-            return Err("support credential custody invalid".into());
-        }
-        let mut token = zeroize::Zeroizing::new(String::new());
-        file.take(4097)
-            .read_to_string(&mut token)
-            .map_err(|_| "support credential invalid")?;
-        if token.len() > 4096 {
-            return Err("support credential invalid".into());
-        }
-        let token = token.trim();
-        if token.is_empty()
-            || !token
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.~+/=".contains(&b))
-        {
-            return Err("support credential invalid".into());
-        }
-        let authorization_text = zeroize::Zeroizing::new(format!("Bearer {token}"));
-        let mut authorization = reqwest::header::HeaderValue::from_str(&authorization_text)
-            .map_err(|_| "support credential invalid")?;
-        authorization.set_sensitive(true);
-        // A path identifies custody, not the provider account selected by its
-        // current credential. Keep this credential commitment internal; only
-        // the enclosing provider-profile digest leaves the connector.
-        let mut credential_hash = Sha256::new();
-        credential_hash.update(b"opaque.support.credential.v1\0");
-        credential_hash.update(token.as_bytes());
-        let credential_binding =
-            zeroize::Zeroizing::new(<[u8; 32]>::from(credential_hash.finalize()));
-        let mut builder = reqwest::Client::builder()
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(8));
-        let ca_digest = if let Some(path) = &profile.ca_certificate_file {
-            if !path.is_absolute() {
-                return Err("support CA requires an absolute private path".into());
-            }
-            let mut file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-                .open(path)
-                .map_err(|_| "support CA unavailable")?;
-            let meta = file.metadata().map_err(|_| "support CA unavailable")?;
-            // SAFETY: geteuid has no preconditions.
-            if !meta.is_file()
-                || meta.uid() != unsafe { libc::geteuid() }
-                || meta.mode() & 0o077 != 0
-                || meta.nlink() != 1
-                || meta.len() > 65536
-            {
-                return Err("support CA custody invalid".into());
-            }
-            let mut bytes = Vec::new();
-            file.by_ref()
-                .take(65537)
-                .read_to_end(&mut bytes)
-                .map_err(|_| "support CA unavailable")?;
-            if bytes.len() > 65536 {
-                return Err("support CA exceeds 64 KiB".into());
-            }
-            let certificates = reqwest::Certificate::from_pem_bundle(&bytes)
-                .map_err(|_| "invalid support CA PEM")?;
-            if certificates.is_empty() || certificates.len() > 16 {
-                return Err("support CA requires one to sixteen PEM certificates".into());
-            }
-            builder = builder.tls_built_in_root_certs(false);
-            for certificate in certificates {
-                builder = builder.add_root_certificate(certificate);
-            }
-            Some(<[u8; 32]>::from(Sha256::digest(&bytes)))
-        } else {
-            None
-        };
-        let client = builder
-            .build()
-            .map_err(|_| "support transport unavailable")?;
-        let mut profile_value = serde_json::json!({"contract":"opaque.support.case.v1","endpoint":endpoint.as_str(),"credential_slot":profile.token_file});
-        if let Some(path) = &profile.ca_certificate_file {
-            profile_value["ca_certificate_slot"] = serde_json::json!(path);
-            profile_value["tls_trust"] = serde_json::json!("configured_pem_only");
-        }
-        let profile_bytes = serde_json::to_vec(&profile_value).map_err(|_| "encoding failed")?;
-        let mut profile_hash = Sha256::new();
-        profile_hash.update(if ca_digest.is_some() {
-            b"opaque.support.provider-profile.v3\0"
-        } else {
-            b"opaque.support.provider-profile.v2\0"
-        });
-        profile_hash.update((profile_bytes.len() as u64).to_be_bytes());
-        profile_hash.update(&profile_bytes);
-        profile_hash.update(credential_binding.as_ref());
-        if let Some(digest) = ca_digest {
-            profile_hash.update(digest);
-        }
-        let digest = format!("{:x}", profile_hash.finalize());
+        let loaded = custody::load(profile, &CONTRACT)?;
         Ok(Self {
-            client,
-            endpoint,
-            authorization,
-            digest,
+            client: loaded.client,
+            endpoint: loaded.endpoint,
+            authorization: loaded.authorization,
+            digest: loaded.digest,
         })
     }
     fn url(&self, id: &str) -> Result<reqwest::Url, String> {
