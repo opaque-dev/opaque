@@ -5,31 +5,31 @@
 class Opaque < Formula
   desc "Approval-gated secrets broker for AI coding tools"
   homepage "https://github.com/opaque-dev/opaque"
-  # Historical v0.4.0 artifacts retain BUSL-1.1. Update this license together
-  # with the URLs/checksums when packaging an Apache-2.0 release.
-  license "BUSL-1.1"
+  # Releases from v0.6.0 ship under Apache-2.0; earlier published artifacts
+  # retain the BUSL-1.1 terms they were released with.
+  license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/opaque-dev/opaque/releases/download/v0.4.0/opaque-0.4.0-aarch64-apple-darwin.tar.gz"
-      sha256 "238e9a02e9ffff7d4525d57cb879558fae407f220b8ddb491d99f3632cef4d1d"
+      url "https://github.com/opaque-dev/opaque/releases/download/v0.6.0/opaque-0.6.0-aarch64-apple-darwin.tar.gz"
+      sha256 "b914f36df06520995506d35da3e1125e1099eaf01c66121209c26465137f52eb"
     end
 
     on_intel do
-      url "https://github.com/opaque-dev/opaque/releases/download/v0.4.0/opaque-0.4.0-x86_64-apple-darwin.tar.gz"
-      sha256 "ab574420f0eda3955b18284fe2962074299c0bf258deb484ac4de6d7571278dd"
+      url "https://github.com/opaque-dev/opaque/releases/download/v0.6.0/opaque-0.6.0-x86_64-apple-darwin.tar.gz"
+      sha256 "b3b07f6e8ebe074f456c349262d5ad99d4e2a7067aa0de81409bfb0d847c4d04"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/opaque-dev/opaque/releases/download/v0.4.0/opaque-0.4.0-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "e09d4e91c48d35326695bc7dcb67def6810bd090d4af54dd90d4a083d272ce8b"
+      url "https://github.com/opaque-dev/opaque/releases/download/v0.6.0/opaque-0.6.0-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "1cc53846fb10958b7639b57607ee0eff2f3490c472ca4bbb7f68c217343e71e8"
     end
 
     on_intel do
-      url "https://github.com/opaque-dev/opaque/releases/download/v0.4.0/opaque-0.4.0-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "063bb0bd8850e24c1e5730b975c08d831d8e9ab7ff0ece5fdae1f75d2d25ad9b"
+      url "https://github.com/opaque-dev/opaque/releases/download/v0.6.0/opaque-0.6.0-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "447041e7513e26ce7fd4c5e28fec3509f23a7a8310a477a39e44b6fec53f261f"
     end
   end
 
@@ -48,7 +48,7 @@ class Opaque < Formula
   end
 
   def caveats
-    return unless OS.mac? && (prefix/"Opaque Reviewer.app").directory?
+    return if !OS.mac? || !(prefix/"Opaque Reviewer.app").directory?
 
     <<~EOS
       The trusted reviewer is available at:
