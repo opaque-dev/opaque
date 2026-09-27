@@ -638,6 +638,85 @@ fn default_true() -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// Known TOML keys
+// ---------------------------------------------------------------------------
+//
+// serde ignores keys it does not know (only `[rules.client]` denies them), so
+// a mistyped or misplaced key is silently inert. These lists let
+// `opaque policy check` report such keys. A unit test keeps each list in step
+// with its struct: it serializes a fully populated value written as an
+// exhaustive struct literal, so adding a field fails to compile until the
+// list is updated.
+
+impl PolicyRule {
+    /// Keys a `[[rules]]` table accepts.
+    pub const FIELDS: &'static [&'static str] = &[
+        "name",
+        "client",
+        "operation_pattern",
+        "target",
+        "workspace",
+        "secret_names",
+        "allow",
+        "client_types",
+        "identity",
+        "approval",
+    ];
+}
+
+impl ClientMatch {
+    /// Keys a `[rules.client]` table accepts.
+    pub const FIELDS: &'static [&'static str] = &[
+        "uid",
+        "exe_path",
+        "exe_sha256",
+        "codesign_team_id",
+        "attestor",
+        "min_attestation",
+        "selectors",
+    ];
+}
+
+impl TargetMatch {
+    /// Keys a `[rules.target]` table accepts.
+    pub const FIELDS: &'static [&'static str] = &["fields"];
+}
+
+impl WorkspaceMatch {
+    /// Keys a `[rules.workspace]` table accepts.
+    pub const FIELDS: &'static [&'static str] =
+        &["remote_url_pattern", "branch_pattern", "require_clean"];
+}
+
+impl SecretNameMatch {
+    /// Keys a `[rules.secret_names]` table accepts.
+    pub const FIELDS: &'static [&'static str] = &["patterns"];
+}
+
+impl IdentityMatch {
+    /// Keys a `[rules.identity]` table accepts.
+    pub const FIELDS: &'static [&'static str] = &[
+        "require_principal",
+        "principal",
+        "roles",
+        "access_modes",
+        "teams",
+    ];
+}
+
+impl ApprovalConfig {
+    /// Keys a `[rules.approval]` table accepts.
+    pub const FIELDS: &'static [&'static str] = &[
+        "require",
+        "factors",
+        "lease_ttl",
+        "one_time",
+        "budget",
+        "require_distinct_approver",
+    ];
+}
+
 impl PolicyRule {
     /// Check whether this rule matches the given request.
     fn matches(&self, request: &OperationRequest) -> bool {
@@ -2090,5 +2169,95 @@ mod tests {
             rule2.identity.access_modes,
             Some(vec![AccessMode::Delegated, AccessMode::BreakGlass])
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod known_key_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn keys(value: &impl Serialize) -> BTreeSet<String> {
+        serde_json::to_value(value)
+            .unwrap()
+            .as_object()
+            .expect("struct serializes to an object")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn listed(fields: &[&str]) -> BTreeSet<String> {
+        fields.iter().map(|f| f.to_string()).collect()
+    }
+
+    /// Exhaustive struct literals: adding a field to any matcher is a
+    /// compile error here until the FIELDS list that `opaque policy check`
+    /// reads is updated too.
+    #[test]
+    fn field_lists_match_the_structs_they_describe() {
+        let client = ClientMatch {
+            uid: Some(501),
+            exe_path: Some("/usr/bin/claude*".into()),
+            exe_sha256: Some("deadbeef".into()),
+            codesign_team_id: Some("TEAM".into()),
+            attestor: Some(AttestorId::try_from("listener".to_string()).unwrap()),
+            min_attestation: Some(AttestationStrength::Weak),
+            selectors: vec![Selector::new("k8s", "ns", "default").unwrap()],
+        };
+        assert_eq!(keys(&client), listed(ClientMatch::FIELDS));
+
+        let target = TargetMatch {
+            fields: [("repo".to_string(), "org/*".to_string())]
+                .into_iter()
+                .collect(),
+        };
+        assert_eq!(keys(&target), listed(TargetMatch::FIELDS));
+
+        let workspace = WorkspaceMatch {
+            remote_url_pattern: Some("*github.com:org/*".into()),
+            branch_pattern: Some("main".into()),
+            require_clean: true,
+        };
+        assert_eq!(keys(&workspace), listed(WorkspaceMatch::FIELDS));
+
+        let secret_names = SecretNameMatch {
+            patterns: vec!["GH_*".into()],
+        };
+        assert_eq!(keys(&secret_names), listed(SecretNameMatch::FIELDS));
+
+        let identity = IdentityMatch {
+            require_principal: Some(true),
+            principal: Some("hum_x".into()),
+            roles: Some(vec!["admin".into()]),
+            access_modes: Some(vec![AccessMode::Delegated]),
+            teams: Some(vec!["platform".into()]),
+        };
+        assert_eq!(keys(&identity), listed(IdentityMatch::FIELDS));
+
+        let approval = ApprovalConfig {
+            require: ApprovalRequirement::FirstUse,
+            factors: vec![ApprovalFactor::LocalBio],
+            lease_ttl: Some(Duration::from_secs(300)),
+            one_time: true,
+            budget: Some(3),
+            require_distinct_approver: true,
+        };
+        assert_eq!(keys(&approval), listed(ApprovalConfig::FIELDS));
+
+        let rule = PolicyRule {
+            name: "fixture".into(),
+            client,
+            operation_pattern: "github.*".into(),
+            target,
+            workspace,
+            secret_names,
+            allow: true,
+            client_types: vec![ClientType::Agent],
+            identity,
+            approval,
+        };
+        assert_eq!(keys(&rule), listed(PolicyRule::FIELDS));
     }
 }

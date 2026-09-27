@@ -37,8 +37,40 @@ Binaries:
 
 ### 2. Configure the MCP client
 
-Configure a stdio server with the absolute path to `opaque-mcp`. For clients that
-use an `mcpServers` JSON object, the entry is:
+`opaque connect <tool>` writes the entry and preserves everything else in the
+client's file (other servers, unrelated keys, and the `env` or extra `args` of
+an existing `opaque` entry). `opaque connect auto` registers with every tool it
+detects.
+
+| Command | File written |
+| --- | --- |
+| `opaque connect claude` | `~/.claude.json` (Claude Code user scope) |
+| `opaque connect cursor` | `~/.cursor/mcp.json` |
+| `opaque connect codex` | `~/.codex/config.toml` |
+
+```sh
+opaque connect codex
+cat ~/.codex/config.toml
+```
+
+```text
+✔  Registered opaque MCP server with Codex
+```
+
+```toml
+[mcp_servers]
+
+[mcp_servers.opaque]
+command = "/opt/homebrew/bin/opaque-mcp"
+args = []
+```
+
+`opaque-mcp` takes no arguments; it always serves MCP over stdio. It accepts
+`--stdio` as a no-op for clients that pass a transport flag (releases up to
+0.4.0 wrote that argument, and the server of that release rejected it).
+
+For any other client that uses an `mcpServers` JSON object, configure a stdio
+server with the absolute path to `opaque-mcp`:
 
 ```json
 {
