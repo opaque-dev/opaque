@@ -81,7 +81,7 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/opaque-dev/opaque
 
-copyright: "Copyright &copy; 2026 Patrick Deutsch"
+copyright: 'Copyright &copy; 2026 Patrick Deutsch · Documentation: <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>'
 
 nav:
   - Home: index.md
@@ -89,6 +89,7 @@ nav:
       - First Operation: tutorial.md
       - Install and Commands: getting-started.md
       - Installable Releases: installable-releases.md
+      - Licensing: licensing.md
       - Hosted Demo: hosted-demo.md
   - Architecture:
       - Boundaries and Evidence: architecture.md

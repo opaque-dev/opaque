@@ -176,7 +176,7 @@ jobs:
           # BSD tar otherwise adds unmanifested AppleDouble metadata files.
           COPYFILE_DISABLE=1 tar czf "$ARCHIVE" \
             -C "target/${{ matrix.target }}/release" \
-            opaqued opaque opaque-mcp opaque-mcp-contract opaque-approve-helper opaque-approver opaque-evidence opaque-web opaque-release.json "${EXTRAS[@]}"
+            opaqued opaque opaque-mcp opaque-mcp-contract opaque-approve-helper opaque-approver opaque-evidence opaque-web opaque-release.json LICENSE LICENSE-DOCS NOTICE "${EXTRAS[@]}"
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
 
       - name: Verify complete archive and smoke native binaries

@@ -19,9 +19,8 @@ dependencies. Fleet wire verification also has a standalone example under
 
 These are Rust source interfaces, not a stable C ABI or a promise that every
 crate supports every operating system. Pin a reviewed Git revision and run
-integration tests when upgrading. The existing Business Source License 1.1
-continues to apply; this architecture change does not change license terms or
-publish packages to a registry.
+integration tests when upgrading. The public core uses Apache-2.0; see [licensing](licensing.md) for documentation
+and third-party terms. These interfaces are not published packages.
 
 ## Compose a dashboard
 

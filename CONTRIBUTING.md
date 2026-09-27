@@ -2,6 +2,19 @@
 
 Thank you for your interest in contributing to Opaque.
 
+## Licensing and contribution sign-off
+
+Code contributions use [Apache-2.0](LICENSE); documentation contributions use
+[CC BY 4.0](LICENSE-DOCS). See [license scope](docs/licensing.md), including
+code snippets and third-party material. Contribute only material you authored
+or have permission to submit under the applicable license.
+
+Each new contribution commit requires a `Signed-off-by` trailer certifying the
+[Developer Certificate of Origin 1.1](DCO). After reading it, use your own
+name and email with `git commit -s`. Sign only for yourself; preserve existing
+authors and sign-offs. A sign-off records origin and permission, not copyright
+assignment. Do not retroactively certify another person's work.
+
 ## Prerequisites
 
 - Rust 1.80+ (edition 2024)

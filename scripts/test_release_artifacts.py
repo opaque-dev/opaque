@@ -22,7 +22,9 @@ class ReleaseArtifactsTests(unittest.TestCase):
         self.binaries = self.root / "binaries"
         self.binaries.mkdir()
         (self.source / "Cargo.toml").write_text('[workspace.package]\nversion = "0.3.0"\n')
-        for command in (["init", "-q"], ["add", "Cargo.toml"],
+        for name in release.LICENSE_FILES:
+            (self.source / name).write_text(f"fixture license: {name}\n")
+        for command in (["init", "-q"], ["add", "Cargo.toml", *release.LICENSE_FILES],
                         ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                          "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]):
             subprocess.run(["git", "-C", str(self.source), *command], check=True, capture_output=True)
@@ -51,7 +53,17 @@ class ReleaseArtifactsTests(unittest.TestCase):
         manifest = self.manifest()
         result = release.verify_archive(self.archive(), **self.args, smoke=True)
         self.assertEqual(result, manifest)
-        self.assertEqual(set(manifest["files"]), set(release.BINS))
+        self.assertEqual(set(manifest["files"]), set(release.BINS + release.LICENSE_FILES))
+
+    def test_license_texts_are_source_bound_and_required(self):
+        self.manifest()
+        for name in release.LICENSE_FILES:
+            self.assertEqual((self.binaries / name).read_bytes(), (self.source / name).read_bytes())
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "payload sets"):
+                release.verify_archive(self.archive(omit=(name,)), **self.args)
+        (self.binaries / "LICENSE").write_text("changed license")
+        with self.assertRaisesRegex(ValueError, "payload verification"):
+            release.verify_archive(self.archive(), **self.args)
 
     def test_manifest_git_reads_trust_only_the_exact_source_root_and_keep_identity_gates(self):
         with patch.object(release, "run", wraps=release.run) as invoke:

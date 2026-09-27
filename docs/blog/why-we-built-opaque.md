@@ -145,4 +145,5 @@ is our attempt to prove it.
 
 ---
 
-*Opaque is source-available under the Business Source License 1.1 (BUSL-1.1).*
+*The current public core uses Apache-2.0; documentation uses CC BY 4.0.
+Earlier revisions retain their published terms. See [licensing](../licensing.md).*

@@ -3,7 +3,7 @@ name = "opaque-embedded-policy-example"
 version = "0.1.0"
 edition = "2024"
 publish = false
-license = "BUSL-1.1"
+license = "Apache-2.0"
 
 # Deliberately separate: this application is an external consumer, not another
 # member of the Opaque product workspace.
