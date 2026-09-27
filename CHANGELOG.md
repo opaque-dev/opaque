@@ -25,6 +25,16 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
   `authority-policy migrate` are unchanged. See `docs/scoped-authority.md` and
   `examples/authority-policy/staging-dispatch.yaml`.
 
+### Changed
+
+- The public core is now licensed under Apache License 2.0 for code, configuration,
+  schemas, examples and build artifacts, and CC BY 4.0 for documentation prose and
+  illustrations (`LICENSE`, `LICENSE-DOCS`, `NOTICE`, `docs/licensing.md`). Release
+  archives now carry all three license files and the release packager refuses to
+  build without them. New contributions require a Developer Certificate of Origin
+  sign-off (`DCO`, `CONTRIBUTING.md`). Earlier tags, binaries and pinned revisions
+  keep the license shipped with them; nothing historical is relabeled.
+
 ### Fixed
 
 - Linux `sandbox.exec` works again on Landlock-capable kernels (#123). The

@@ -5,6 +5,8 @@
 class Opaque < Formula
   desc "Approval-gated secrets broker for AI coding tools"
   homepage "https://github.com/opaque-dev/opaque"
+  # Historical v0.4.0 artifacts retain BUSL-1.1. Update this license together
+  # with the URLs/checksums when packaging an Apache-2.0 release.
   license "BUSL-1.1"
 
   on_macos do

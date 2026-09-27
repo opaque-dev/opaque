@@ -15,5 +15,6 @@ perform trusted review, reserve a durable grant or execute a provider action.
 Use the broker for those complete contracts; an embedding must preserve their
 authority and custody boundaries. See [reusable core](../../docs/reusable-core.md).
 
-The example and core use the repository's existing Business Source License 1.1.
+The example code and core use Apache-2.0. Documentation uses CC BY 4.0;
+see [license scope](../../docs/licensing.md).
 The Rust interfaces are evolving; pin a reviewed commit when consuming via Git.

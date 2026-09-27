@@ -47,8 +47,8 @@ two you already have, and proves what did.*
 
 Size is a journey, not a gate. Never qualify the audience by headcount;
 say "start on one laptop; one signed policy governs a fleet." The
-free-under-10-developers BUSL line is licensing and appears only in the
-licensing footnote. Do not claim government, compliance certifications, or
+public core is Apache-2.0 and documentation is CC BY 4.0; link to the
+licensing page for scope and third-party notices. Do not claim government, compliance certifications, or
 a vertical: nothing shipped supports those claims. Do not pitch individual
 hobbyist developers as the market. Where it lives: `#op-who` on the landing page, "Who It's For"
 in `README.md`, the opening paragraph of `docs/index.md`.

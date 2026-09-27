@@ -1,7 +1,7 @@
 # Opaque
 
 ![CI](https://github.com/opaque-dev/opaque/actions/workflows/ci.yml/badge.svg)
-[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-orange.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 ![Release](https://img.shields.io/github/v/release/opaque-dev/opaque)
 
 **Give agents bounded authority.**
@@ -73,4 +73,4 @@ checkout, and the [explicit audit migration](docs/evidence-checkpoints.md#authen
 before upgrading an existing audit store.
 
 [Documentation](docs/README.md) · [Build on the public core](docs/reusable-core.md) ·
-[BUSL-1.1 license](LICENSE)
+[Apache-2.0 code license](LICENSE) · [CC BY 4.0 documentation](LICENSE-DOCS) · [License scope](docs/licensing.md)

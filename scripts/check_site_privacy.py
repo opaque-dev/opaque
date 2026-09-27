@@ -32,7 +32,7 @@ PUBLIC_ROUTES = frozenset({
     "compliance/fips-assessment", "compliance/hardening", "compliance/verifying-releases",
     "enterprise-architecture", "evaluation-guide", "evidence-checkpoints", "federation", "getting-started",
     "mcp-qualified-tools", "github-ci-inference", "github-secret-inventory",
-    "installable-releases", "ssh-health", "workload-attestation",
+    "installable-releases", "licensing", "ssh-health", "workload-attestation",
     "hosted-demo", "identity", "linux-polkit", "llm-harness", "mcp-integration",
     "mobile-approvals", "operations", "policy", "roadmap-deferred",
     "remote-approvals", "reusable-core", "scoped-authority", "authority-policy",

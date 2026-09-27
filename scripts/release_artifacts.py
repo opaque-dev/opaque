@@ -17,6 +17,7 @@ import tomllib
 
 BINS = ("opaqued", "opaque", "opaque-mcp", "opaque-mcp-contract",
         "opaque-approve-helper", "opaque-approver", "opaque-evidence", "opaque-web")
+LICENSE_FILES = ("LICENSE", "LICENSE-DOCS", "NOTICE")
 MANIFEST = "opaque-release.json"
 APP = "Opaque Reviewer.app"
 TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin",
@@ -48,7 +49,7 @@ def valid_path(name):
 
 
 def payload_path(name, target):
-    return name in BINS or (target.endswith("apple-darwin") and name.startswith(APP + "/"))
+    return name in BINS + LICENSE_FILES or (target.endswith("apple-darwin") and name.startswith(APP + "/"))
 
 
 def create_manifest(source, binary_dir, target, version, revision, allow_dirty=False):
@@ -76,7 +77,14 @@ def create_manifest(source, binary_dir, target, version, revision, allow_dirty=F
             source_hash.update(b"file\0" + bytes.fromhex(digest(path.read_bytes())))
         else:
             source_hash.update(b"absent\0")
-    paths = [binary_dir / name for name in BINS]
+    # Copy the exact source notices before hashing the distributable payload.
+    for name in LICENSE_FILES:
+        origin, destination = source / name, binary_dir / name
+        if origin.is_symlink() or not origin.is_file() or destination.is_symlink():
+            raise ValueError(f"missing or linked release license: {name}")
+        destination.write_bytes(origin.read_bytes())
+        destination.chmod(0o644)
+    paths = [binary_dir / name for name in BINS + LICENSE_FILES]
     if target.endswith("apple-darwin"):
         app = binary_dir / APP
         if not (app / "Contents/Info.plist").is_file() or not (app / "Contents/MacOS/OpaqueReviewer").is_file():
@@ -137,7 +145,7 @@ def verify_archive(archive, *, version, revision, target, allow_dirty=False, smo
             raise ValueError("unsupported qualification claim")
         payload = {name for name, item in members.items() if item.isfile() and name != MANIFEST}
         files = manifest.get("files")
-        if not isinstance(files, dict) or set(files) != payload or not set(BINS) <= payload:
+        if not isinstance(files, dict) or set(files) != payload or not set(BINS + LICENSE_FILES) <= payload:
             raise ValueError("archive and manifest payload sets differ or a required tool is missing")
         if target.endswith("apple-darwin") and not {APP + "/Contents/Info.plist", APP + "/Contents/MacOS/OpaqueReviewer"} <= payload:
             raise ValueError("macOS reviewer app is missing")

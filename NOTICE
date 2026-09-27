@@ -1,0 +1,15 @@
+Opaque
+Copyright 2026 Patrick Deutsch
+
+Original code, configuration, schemas, and build artifacts in this revision
+are licensed under Apache License 2.0 (LICENSE). Original documentation prose
+and illustrations are licensed under CC BY 4.0 (LICENSE-DOCS). Code snippets
+in documentation are also available under Apache License 2.0.
+
+Third-party works retain their own licenses and attribution. Bundled Archivo
+and IBM Plex Mono fonts use the SIL Open Font License 1.1; their full notices
+are in assets/brand/licenses/. Dependencies retain their respective licenses.
+No rights to third-party material beyond those licenses are granted here.
+
+These licenses do not grant trademark rights or imply foundation affiliation.
+See docs/licensing.md for scope and treatment of earlier revisions.
