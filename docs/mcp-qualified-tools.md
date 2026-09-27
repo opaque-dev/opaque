@@ -9,6 +9,18 @@ This is a bounded MCP 2025-06-18 Streamable HTTP implementation, not universal M
 interoperability. Qualify the selected server, credential type, catalog and schema
 before enrolling it. No bundled example establishes compatibility with a live service.
 
+## Discovery in the MCP adapter
+
+Signed MCP contracts are an unreleased source capability. `opaque-mcp` built from
+source after 0.5.0 advertises `opaque_mcp_tool_<alias>` routes only when the
+authenticated daemon returns them, and `opaque_mcp_invocation_get` and
+`opaque_mcp_invocation_revoke` only when the daemon's `mcp_catalog` reply reports
+`gateway.availability` as `enabled` or `fixture_only`. A daemon without an `[mcp]`
+section reports `disabled`, and daemons through 0.5.0 omit the field; in both cases
+the list holds the 22 built-in tools and no `opaque_mcp_*` tool. The 0.5.0 adapter
+listed the two invocation tools unconditionally. The recorded reply is in
+[MCP integration](mcp-integration.md#4-verify-discovery).
+
 ## Separate the advertised schema from admitted input
 
 Registry version 1 is unchanged: `input_schema` is both the finite admitted schema

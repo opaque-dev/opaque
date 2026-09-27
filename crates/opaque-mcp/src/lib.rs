@@ -5,3 +5,4 @@
 
 pub mod gateway_contract;
 pub mod protocol;
+pub mod validation;
