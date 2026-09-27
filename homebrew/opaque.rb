@@ -48,7 +48,7 @@ class Opaque < Formula
   end
 
   def caveats
-    return unless OS.mac? && (prefix/"Opaque Reviewer.app").directory?
+    return if !OS.mac? || !(prefix/"Opaque Reviewer.app").directory?
 
     <<~EOS
       The trusted reviewer is available at:
