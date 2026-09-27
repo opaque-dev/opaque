@@ -11,10 +11,11 @@ separate human review for each exact action. One broker runs one operation kind:
 support-case status changes against the fixed REST contract below, or a
 [GitHub Actions staging dispatch](#dispatch-a-github-actions-staging-workflow).
 
-This workflow is unreleased. The support connector implements the fixed REST
-contract below; it is not a Zendesk or Salesforce adapter. Automated tests use
-synthetic providers and synthetic reviewer signatures. They do not certify a live
-provider, native human presence, or production capacity.
+This workflow is available from v0.6.0 through `opaque scope`. The support
+connector implements the fixed REST contract below; it is not a Zendesk or
+Salesforce adapter. Automated tests use synthetic providers and synthetic reviewer
+signatures. They do not certify a live provider, native human presence, or
+production capacity.
 
 ## Prerequisites
 
@@ -73,8 +74,9 @@ the built-in public roots.
 The loaded CA file bytes and path are bound into the provider profile. Changing
 the file requires a broker restart and fresh scope approval; old scope/action
 approvals cannot authorize writes under the replacement trust. Editing the file
-alone does not change the running connector. This support is unreleased; local
-TLS fixtures exercise the configured path, not a customer PKI deployment.
+alone does not change the running connector. This support is available from
+v0.6.0; local TLS fixtures exercise the configured path, not a customer PKI
+deployment.
 
 ## Provider contract
 

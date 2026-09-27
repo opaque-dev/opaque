@@ -1,9 +1,9 @@
 # Keep an AX action attached to its retained outcome
 
-**Availability: unreleased external example.** This helper maps a logical Google
-AX task action to an Opaque request ID, then verifies and reads its historical
-scope evidence. Unknown or missing outcomes stay on hold. The helper never
-approves an action, sends a provider request, or authorizes a retry.
+**Availability: v0.6.0 source tree; not in release archives.** This helper maps
+a logical Google AX task action to an Opaque request ID, then verifies and reads
+its historical scope evidence. Unknown or missing outcomes stay on hold. The
+helper never approves an action, sends a provider request, or authorizes a retry.
 
 ## Run against AX's local task runner
 

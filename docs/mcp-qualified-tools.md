@@ -11,8 +11,8 @@ before enrolling it. No bundled example establishes compatibility with a live se
 
 ## Discovery in the MCP adapter
 
-Signed MCP contracts are an unreleased source capability. `opaque-mcp` built from
-source after 0.5.0 advertises `opaque_mcp_tool_<alias>` routes only when the
+The discovery gate below is available from v0.6.0. `opaque-mcp` from v0.6.0
+advertises `opaque_mcp_tool_<alias>` routes only when the
 authenticated daemon returns them, and `opaque_mcp_invocation_get` and
 `opaque_mcp_invocation_revoke` only when the daemon's `mcp_catalog` reply reports
 `gateway.availability` as `enabled` or `fixture_only`. A daemon without an `[mcp]`

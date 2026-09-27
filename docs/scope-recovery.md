@@ -1,6 +1,7 @@
 # Reproduce an interrupted authorization budget
 
-**Availability: unreleased public-core example.** Run 16 concurrent proposals
+**Availability: v0.6.0 source tree.** This example runs from a source checkout,
+not from a release archive. Run 16 concurrent proposals
 against a shared four-attempt budget, kill the producer, and inspect the retained
 charges and unknown outcomes after restart.
 
@@ -11,9 +12,9 @@ calls and requires no private enterprise source or production credentials.
 
 ## Run the example
 
-Use macOS or Linux with Git and the repository's Rust toolchain. The example is
-part of unreleased [PR #132](https://github.com/opaque-dev/opaque/pull/132).
-For an exact reproducible source checkout:
+Use macOS or Linux with Git and the repository's Rust toolchain. The example
+landed in [PR #132](https://github.com/opaque-dev/opaque/pull/132) and is in the
+v0.6.0 source tree. For an exact reproducible source checkout:
 
 ```sh
 git clone https://github.com/opaque-dev/opaque.git opaque-scope-recovery

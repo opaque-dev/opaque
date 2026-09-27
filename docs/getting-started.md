@@ -35,9 +35,13 @@ Binaries:
 - `./target/release/opaque-evidence` (offline checkpoints and verification)
 - `./target/release/opaque-web` (local dashboard)
 
-These are checkout builds. The reviewer app, MCP v2 and evidence CLI are
-unreleased additions; a tagged package may omit them. See the
-[reviewer installation guide](remote-approvals.md) for the separate macOS bundle.
+These are checkout builds. A v0.6.0 release archive contains the same eight
+tools, the `opaque-release.json` manifest and the `LICENSE`, `LICENSE-DOCS` and
+`NOTICE` files; macOS archives add `Opaque Reviewer.app`. `opaque scope`,
+`opaque authority-policy` and the scope subcommands of `opaque-evidence` are
+available from v0.6.0. See the [reviewer installation guide](remote-approvals.md)
+for the macOS app and [installable releases](installable-releases.md) to verify
+an archive.
 
 **Existing installations:** authenticated audit heads require an
 [explicit legacy upgrade](evidence-checkpoints.md#authenticated-local-head-and-older-databases)

@@ -66,10 +66,16 @@ macOS and Linux are supported. For the published Homebrew package:
 brew install opaque-dev/tap/opaque
 ```
 
-The workstation reviewer app, signed MCP v2 contracts, and portable evidence
-checkpoints are **unreleased source capabilities**. Tagged packages may omit
-them. Follow [source build instructions](docs/getting-started.md) to evaluate the
-checkout, and the [explicit audit migration](docs/evidence-checkpoints.md#authenticated-local-head-and-older-databases)
+Each v0.6.0 release archive contains all eight tools (`opaqued`, `opaque`,
+`opaque-mcp`, `opaque-mcp-contract`, `opaque-approve-helper`, `opaque-approver`,
+`opaque-evidence`, `opaque-web`), the `opaque-release.json` manifest and the
+`LICENSE`, `LICENSE-DOCS` and `NOTICE` files; macOS archives add `Opaque Reviewer.app`.
+The [scoped authority workflow](docs/scoped-authority.md) is **available from v0.6.0**.
+Signed MCP v2 contracts and portable evidence checkpoints ship in the same archives.
+Automated tests use synthetic providers and reviewer signatures; they do not qualify
+a live provider or a native approval ceremony on your host. Verify an archive with
+[installable releases](docs/installable-releases.md), and follow the
+[explicit audit migration](docs/evidence-checkpoints.md#authenticated-local-head-and-older-databases)
 before upgrading an existing audit store.
 
 [Documentation](docs/README.md) · [Build on the public core](docs/reusable-core.md) ·

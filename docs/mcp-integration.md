@@ -122,8 +122,8 @@ current discovery policy. `opaque_mcp_invocation_get` and
 `opaque_mcp_invocation_revoke` appear only when `gateway.availability` is `enabled`
 or `fixture_only`; a missing field (daemons through 0.5.0), `disabled` or any other
 value hides them. An unavailable gateway leaves the built-in tools visible while
-omitting every `opaque_mcp_*` tool. This gate exists in source builds after 0.5.0;
-the 0.5.0 packages list the two invocation tools unconditionally.
+omitting every `opaque_mcp_*` tool. This gate is available from v0.6.0; the
+0.5.0 packages list the two invocation tools unconditionally.
 
 ## Available Tools
 

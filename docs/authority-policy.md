@@ -1,7 +1,7 @@
 # Validate a versioned authority policy
 
-The unreleased `AuthorityPolicy` v1alpha1 format describes finite authority for
-one operation kind: support-case status changes or GitHub Actions
+The `AuthorityPolicy` v1alpha1 format, available from v0.6.0, describes finite
+authority for one operation kind: support-case status changes or GitHub Actions
 `workflow_dispatch`. Validation and compilation run offline and create no
 grants, approvals, seals, credentials or ledger records.
 
@@ -13,7 +13,7 @@ opaque authority-policy schema
 
 Both examples select named tenant, connector and reviewer references. A manifest
 cannot supply an endpoint, credential, principal or signing key. Validating the
-dispatch example with a build of this branch prints:
+dispatch example with a v0.6.0 build prints:
 
 ```json
 {

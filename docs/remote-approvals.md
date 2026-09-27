@@ -6,13 +6,12 @@ the full review over pinned TLS and signs the exact challenge. The broker verifi
 that signature and retains the decision before acknowledging it. Notification
 adapters cannot approve work or replace the native review ceremony.
 
-This revision adds `Opaque Reviewer.app` and the standalone reviewer to the macOS
-release workflow; existing published tags may not contain them. The shell
-installer installs CLI binaries only. The updated Homebrew formula preserves an
+The macOS release archives include `Opaque Reviewer.app` and the standalone
+reviewer (verified in the published v0.5.0 `aarch64-apple-darwin` archive, which
+also carries `opaque-approver`). The shell installer installs CLI binaries only.
+The Homebrew formula tracks the latest published release and preserves the
 included app at `$(brew --prefix opaque)/Opaque Reviewer.app` without opening or
-registering it; the release archive also supports manual installation. The formula
-currently pins v0.2.0 and needs a future release URL/checksum update before it can
-deliver the newly added app.
+registering it; the release archive also supports manual installation.
 Its native URL handler accepts opaque references only, queues a bounded set of
 notices and resolves them against explicitly selected local enrollment. Opening
 a notice does not approve it. A reviewer chooses to open the full immutable

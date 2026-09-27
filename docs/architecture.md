@@ -11,9 +11,9 @@ This page describes source at
 Source implementation does not establish availability in an installed release.
 Check the selected version and the capability-specific qualification requirements.
 
-The [scoped authority foundation](scoped-authority.md) is a separate, unreleased
-library path for finite delegated work. It is not wired into the execution paths
-described below.
+The [scoped authority foundation](scoped-authority.md) is a separate path for
+finite delegated work, available from v0.6.0 through `opaque scope`. It is not
+wired into the execution paths described below.
 
 <a id="1-design-goals"></a>
 <a id="3-crates"></a>

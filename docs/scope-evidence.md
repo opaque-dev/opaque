@@ -1,8 +1,10 @@
 # Inspect retained scope accounting offline
 
-**Availability: unreleased, on the scoped-authority development branch.** Export
-one broker's complete retained scope ledger, then verify its signature and
-accounting without access to the broker database or private enterprise source.
+**Availability: v0.6.0.** The `opaque-evidence` tool in every v0.6.0 release
+archive includes `create-scope` and `verify-scope-reviews`; the source build below
+is one way to obtain it. Export one broker's complete retained scope ledger, then
+verify its signature and accounting without access to the broker database or
+private enterprise source.
 
 ```sh
 cargo build --locked -p opaque --bin opaque-evidence
