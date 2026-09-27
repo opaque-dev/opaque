@@ -85,8 +85,10 @@ fn status_reports_seal_failure_and_service_state_without_claiming_daemon_livenes
 fn status_detects_each_mcp_configuration_and_handles_unreadable_files() {
     let f = Fixture::new();
     for (file, document, name) in [
+        // Claude Code reads user-scope MCP servers from ~/.claude.json, not
+        // from ~/.claude/settings.json.
         (
-            ".claude/settings.json",
+            ".claude.json",
             r#"{"mcpServers":{"opaque":{"command":"opaque-mcp"}}}"#,
             "Claude Code",
         ),

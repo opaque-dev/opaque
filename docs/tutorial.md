@@ -192,7 +192,17 @@ retained references and verification limits.
 
 ## 8. Point your agent at it
 
-For an MCP client using an `mcpServers` configuration, add:
+For Claude Code, Cursor or Codex, let the CLI write the entry:
+
+```sh
+opaque connect claude    # or: cursor, codex, auto
+```
+
+```text
+✔  Registered opaque MCP server with Claude Code
+```
+
+For any other MCP client using an `mcpServers` configuration, add:
 
 ```json
 {

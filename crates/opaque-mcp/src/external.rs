@@ -2,6 +2,19 @@
 //! upstream destination, credential, discovery or approval authority of its own.
 use super::*;
 const PREFIX: &str = "opaque_mcp_tool_";
+/// The daemon states in every `mcp_catalog` reply whether its signed gateway
+/// serves `mcp_call`, `mcp_get` and `mcp_revoke`. Only these two values mean
+/// yes; a missing field (daemons through 0.5.0) or any other value hides the
+/// invocation tools, so a fresh installation never advertises a v2 surface
+/// its daemon would refuse.
+fn serves_gateway(catalog: &serde_json::Value) -> bool {
+    matches!(
+        catalog
+            .pointer("/gateway/availability")
+            .and_then(serde_json::Value::as_str),
+        Some("enabled" | "fixture_only")
+    )
+}
 pub async fn list(id: Option<serde_json::Value>, client: &DaemonClient) -> JsonRpcResponse {
     let mut response = handle_tools_list(id);
     // DaemonClient already bounds this read-only exchange to 30 seconds,
@@ -9,11 +22,8 @@ pub async fn list(id: Option<serde_json::Value>, client: &DaemonClient) -> JsonR
     // hide enrolled tools while the daemon is still attesting the adapter.
     if let Ok(reply) = client.call("mcp_catalog", json!({})).await
         && reply.error.is_none()
-        && let Some(tools) = reply.result.and_then(|v| {
-            v.get("tools")
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-        })
+        && let Some(catalog) = reply.result
+        && let Some(tools) = catalog.get("tools").and_then(serde_json::Value::as_array)
     {
         if tools.len() > 128 {
             return response;
@@ -28,6 +38,9 @@ pub async fn list(id: Option<serde_json::Value>, client: &DaemonClient) -> JsonR
                 if tool["name"].as_str().is_some_and(|n| n.starts_with(PREFIX)) {
                     output.push(json!({"name":tool["name"],"description":tool["description"],"inputSchema":tool["inputSchema"]}));
                 }
+            }
+            if !serves_gateway(&catalog) {
+                return response;
             }
             for (name, description) in [
                 (
@@ -74,14 +87,15 @@ pub async fn call(
         let Some(tool) = tool else {
             return JsonRpcResponse::error(id, INVALID_PARAMS, "unknown tool");
         };
-        let valid =
-            jsonschema::validator_for(&tool["inputSchema"]).is_ok_and(|v| v.is_valid(&args));
-        if !valid {
-            return JsonRpcResponse::error(
-                id,
-                INVALID_PARAMS,
-                "tool arguments do not match the input schema",
-            );
+        // A catalog schema the adapter cannot compile admits nothing and is
+        // not described, since the failure is the schema, not the arguments.
+        let Ok(validator) = jsonschema::validator_for(&tool["inputSchema"]) else {
+            return JsonRpcResponse::error(id, INVALID_PARAMS, validation::SCHEMA_MISMATCH);
+        };
+        if let Some(message) =
+            validation::describe_failures(&tool["inputSchema"], &validator, &args)
+        {
+            return JsonRpcResponse::error(id, INVALID_PARAMS, message);
         }
         let mut params = args;
         params["route"] = json!(alias);

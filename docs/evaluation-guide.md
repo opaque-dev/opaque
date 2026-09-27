@@ -87,6 +87,10 @@ and we would rather you know now.
 4. **Read the source at the pinned commit.** The architecture pages cite
    the exact commit they describe, so what you read is what you audit.
 
+Steps 2 and 3 are scripted, with no external accounts, in the
+[Harborlight quickstart](https://github.com/opaque-dev/harborlight).
+Its CI runs the same falsification weekly against the released package.
+
 ## Where to go next
 
 [Bounded work](bounded-work.md) covers immutable task manifests and
