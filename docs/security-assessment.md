@@ -43,7 +43,10 @@
 > Appendix A/B file lists and dependency counts are frozen at 2026-02-12.
 >
 > September 11 source update: authenticated audit heads, explicit legacy upgrade
-> and independently verifiable checkpoints are implemented but unreleased.
+> and independently verifiable checkpoints are implemented, and `opaque-evidence`
+> ships in the v0.6.0 release archives. The scoped authority foundation
+> (`opaque scope`, signed scope checkpoints) is available from v0.6.0; it landed
+> after the 2026-09-14 verification pass and is not covered by the findings below.
 > Local verification cannot detect a forged history when the attacker holds the
 > HMAC key, or establish freshness of an older intact snapshot. The recovery
 > instructions below have been corrected; the historical findings elsewhere

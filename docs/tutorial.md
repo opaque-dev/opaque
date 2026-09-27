@@ -26,9 +26,10 @@ and calls GitHub. The CLI exercises the same broker before you connect an agent.
 ## 1. Install
 
 This tutorial covers the baseline broker flow. The reviewer app, signed MCP v2
-projections and portable checkpoints are unreleased source capabilities; see
-[getting started](getting-started.md) for their build paths. Before upgrading an
-existing installation to the current source writer, follow the
+projections and portable checkpoints ship in the v0.6.0 release archives, and the
+scoped authority workflow is available from v0.6.0; see
+[getting started](getting-started.md) for the package contents and build paths.
+Before upgrading an existing installation, follow the
 [audit migration guide](evidence-checkpoints.md#authenticated-local-head-and-older-databases).
 
 === "macOS (Homebrew)"

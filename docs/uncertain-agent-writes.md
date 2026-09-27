@@ -7,8 +7,9 @@ requests, kill it after dispatch, and inspect what survives:
 cargo run --locked -p opaque --example scope-recovery -- /tmp/opaque-recovery-run
 ```
 
-This public-core example is part of the unreleased
-[scope-evidence change](https://github.com/opaque-dev/opaque/pull/132).
+This public-core example landed in the
+[scope-evidence change](https://github.com/opaque-dev/opaque/pull/132) and is in
+the v0.6.0 source tree; it runs from a checkout, not from a release archive.
 Use a new absolute output directory on Linux or macOS. Its identities, reviewer
 signatures and local provider effects are synthetic. The process termination,
 transactional accounting and offline signature checks execute real code. The

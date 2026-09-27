@@ -5,10 +5,12 @@ together. Source-only integration changes remain unavailable through an older
 archive. The Homebrew formula must continue pointing at published artifacts
 until the new release and its checksums exist.
 
-The release workflow now tests the tagged workspace on Linux and macOS before
+The release workflow tests the tagged workspace on Linux and macOS before
 building. Each archive must contain all eight tools: `opaqued`, `opaque`,
 `opaque-mcp`, `opaque-mcp-contract`, `opaque-approve-helper`, `opaque-approver`,
-`opaque-evidence`, and `opaque-web`. macOS archives also require the reviewer app.
+`opaque-evidence`, and `opaque-web`. From v0.6.0 every archive also carries the
+`LICENSE`, `LICENSE-DOCS` and `NOTICE` files, and the manifest gate refuses a
+payload without them. macOS archives also require the reviewer app.
 
 `opaque-release.json` records the workspace version, exact source revision,
 source tree digest and every payload file's hash, size and executable mode.
@@ -29,8 +31,8 @@ python3 scripts/release_artifacts.py manifest \
   --revision "$release_revision"
 ```
 
-Include that manifest in the archive with the tools and, on macOS, the complete
-reviewer app. Then verify the exact archive:
+Include that manifest in the archive with the tools, the three license files
+and, on macOS, the complete reviewer app. Then verify the exact archive:
 
 ```sh
 python3 scripts/release_artifacts.py verify \
