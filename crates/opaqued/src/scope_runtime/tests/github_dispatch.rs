@@ -265,8 +265,16 @@ fn charged(f: &Fixture, scope: &ScopeGrant) -> u64 {
 async fn in_scope_dispatch_is_api_accepted_budget_blocks_the_third_and_replay_never_resends() {
     let github = GitHub::start().await;
     github.reads(&staging(), &[SHA]).await;
+    // GitHub's answer under the pinned API version: 200 with the run details.
     github
-        .dispatches(&staging(), ResponseTemplate::new(204))
+        .dispatches(
+            &staging(),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "workflow_run_id": 71,
+                "run_url": "https://api.github.com/repos/example-org/service/actions/runs/71",
+                "html_url": "https://github.com/example-org/service/actions/runs/71"
+            })),
+        )
         .await;
     let f = fixture(&github, vec![staging()], 2);
     let (scope, issuance) = issued(&f, &[&staging()], 2);
@@ -469,11 +477,17 @@ async fn out_of_scope_repository_workflow_and_ref_are_denied_before_any_provider
 }
 
 #[tokio::test]
-async fn server_error_lost_connection_and_timeout_are_unknown_charged_and_never_resent() {
-    for mode in ["500", "502", "dropped", "timeout"] {
+async fn server_error_bare_200_lost_connection_and_timeout_are_unknown_charged_and_never_resent() {
+    for mode in ["500", "502", "bare-200", "dropped", "timeout"] {
         let github = GitHub::start().await;
         github.reads(&staging(), &[SHA]).await;
         match mode {
+            // A 200 without run details is not GitHub's documented answer.
+            "bare-200" => {
+                github
+                    .dispatches(&staging(), ResponseTemplate::new(200))
+                    .await
+            }
             "500" => {
                 github
                     .dispatches(&staging(), ResponseTemplate::new(500))

@@ -9,6 +9,19 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+### Fixed
+
+- A scoped `github.workflow.dispatch` that GitHub accepted is recorded as
+  `api_accepted` again. The broker pins REST API version `2026-03-10`, under
+  which GitHub answers a dispatch with `200` and the new run's id instead of
+  `204`; v0.6.0 accepted only `204`, so every successful scope dispatch against
+  github.com was retained as `unknown` (charged and never resent). The shared
+  GitHub dispatch protocol now reads the bounded `200` body: a non-zero
+  `workflow_run_id` is `api_accepted` and the broker logs it; a malformed,
+  partial, oversized or zero-id body stays `unknown`. `204` is still accepted.
+  The staging task family, which already bound that run id, now uses the same
+  code. The scope ledger does not retain the run id yet. See #148.
+
 ## [0.6.0] - 2026-09-26
 
 ### Added

@@ -132,22 +132,30 @@ review; that outcome is `rejected` and nothing was dispatched. GitHub does not
 enforce this precondition, so a head that moves between the re-read and the
 POST is not caught. The one write is
 `POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches` with body
-`{"ref":"main"}` and no inputs. GitHub answers `204` with no run id: the broker
-records `api_accepted`, which is an acknowledgment, not a run, a deployment or a
-success. A `4xx` means GitHub validated and refused, recorded as `rejected`.
+`{"ref":"main"}` and no inputs, under GitHub REST API version `2026-03-10`.
+GitHub answers `200` with the new run's id: the broker records `api_accepted`
+and writes the run id to its log. The scope ledger does not retain the run id.
+`api_accepted` is an acknowledgment, not a deployment or a success. The older
+API answer, `204` with no body, is also `api_accepted`. A `4xx` means GitHub
+validated and refused, recorded as `rejected`.
 
-Every other answer, including `5xx`, a timeout and a closed connection, is
-`unknown`. The attempt stays charged and replaying the round returns the
-retained record without another POST. Because `workflow_dispatch` has no
-idempotency key, an `unknown` dispatch may or may not have started a run.
-`opaque scope outcome` states this on stderr for an unknown dispatch; inspect
-the repository's Actions runs before requesting a new dispatch. Correlating a
-run to an action is by branch and time only, because the broker sends no
-inputs; the task family's `run-name` correlation does not apply here.
+Every other answer, including a `200` without a usable run id, `5xx`, a timeout
+and a closed connection, is `unknown`. The attempt stays charged and replaying
+the round returns the retained record without another POST. Because
+`workflow_dispatch` has no idempotency key, an `unknown` dispatch may or may not
+have started a run. `opaque scope outcome` states this on stderr for an unknown
+dispatch; inspect the repository's Actions runs before requesting a new
+dispatch. Correlating such a run to an action is by branch and time only,
+because the broker sends no inputs; the task family's `run-name` correlation
+does not apply here.
 
-Automated tests cover this path against a synthetic HTTPS GitHub. No dispatch
-against real GitHub has been performed from this workflow; a live dispatch
-remains unverified.
+Automated tests cover this path against a synthetic HTTPS GitHub that answers
+as API version `2026-03-10` documents. One maintainer test of v0.6.0 against
+github.com, in a private repository and not public evidence, dispatched twice
+under one approved scope: GitHub created exactly two runs, and v0.6.0 retained
+both as `unknown` because it accepted only `204`
+([#148](https://github.com/opaque-dev/opaque/issues/148)). The fix is
+unreleased, and no live dispatch has been performed with it yet.
 
 ## Review and execute
 
