@@ -436,43 +436,15 @@ where
             outcome(SlotState::Unknown, "internal_error")
         };
     }
-    match request.send().await {
-        Ok(mut response) if response.status().as_u16() == 200 => {
-            // Bind direct provider evidence where supported. Never follow its
-            // supplied URLs, and never retry a malformed/partial response.
-            let mut bytes = Vec::new();
-            loop {
-                match response.chunk().await {
-                    Ok(Some(chunk)) if bytes.len() + chunk.len() <= 16384 => {
-                        bytes.extend_from_slice(&chunk)
-                    }
-                    Ok(None) => break,
-                    _ => return outcome(SlotState::Unknown, "transport_unknown"),
-                }
-            }
-            #[derive(Deserialize)]
-            struct DispatchResponse {
-                workflow_run_id: u64,
-            }
-            let Ok(body) = serde_json::from_slice::<DispatchResponse>(&bytes) else {
-                return outcome(SlotState::Unknown, "transport_unknown");
-            };
-            if body.workflow_run_id == 0 {
-                return outcome(SlotState::Unknown, "transport_unknown");
-            }
-            SlotOutcome {
-                ssh_receipt: None,
-                inference_receipt: None,
-                state: SlotState::ApiAccepted,
-                code: "api_accepted".into(),
-                provider_run_id: Some(body.workflow_run_id),
-            }
-        }
-        other => match workflow::acknowledge(other) {
-            Acknowledgment::Accepted => outcome(SlotState::ApiAccepted, "api_accepted"),
-            Acknowledgment::Rejected => outcome(SlotState::Rejected, "provider_rejected"),
-            Acknowledgment::Unknown => outcome(SlotState::Unknown, "transport_unknown"),
+    // Bind the run id GitHub returns as direct provider evidence. Never follow
+    // its supplied URLs, and never retry a malformed or partial answer.
+    match workflow::acknowledge(request.send().await).await {
+        Acknowledgment::Accepted { run_id } => SlotOutcome {
+            provider_run_id: run_id,
+            ..outcome(SlotState::ApiAccepted, "api_accepted")
         },
+        Acknowledgment::Rejected => outcome(SlotState::Rejected, "provider_rejected"),
+        Acknowledgment::Unknown => outcome(SlotState::Unknown, "transport_unknown"),
     }
 }
 

@@ -176,21 +176,35 @@ pub async fn tag_absent(
     Ok(())
 }
 
-/// What one `POST .../dispatches` attempt established. `Accepted` is GitHub's
-/// documented `204` acknowledgment (no run id), never workflow completion.
-/// `Rejected` means GitHub validated and refused, so no run was created.
-/// Everything else, including an undocumented `2xx`, a `408`, any `5xx` and a
-/// transport failure, is `Unknown`: the request may or may not have dispatched,
-/// and there is no idempotency key to make a second attempt safe.
+/// GitHub's run details are three short fields; a larger answer is not them.
+const MAX_DISPATCH_BYTES: usize = 16 * 1024;
+
+/// What one `POST .../dispatches` attempt established. Under the pinned API
+/// version GitHub answers `200` with the new run's id, and `Accepted` carries
+/// it; the `2022-11-28` answer, `204` with no body, is `Accepted` without one.
+/// Neither is workflow completion. `Rejected` means GitHub validated and
+/// refused, so no run was created. Everything else, including a `200` whose
+/// body is malformed, partial, oversized or names run `0`, any other `2xx`, a
+/// `408`, any `5xx` and a transport failure, is `Unknown`: the request may or
+/// may not have dispatched, and there is no idempotency key to make a second
+/// attempt safe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Acknowledgment {
-    Accepted,
+    Accepted { run_id: Option<u64> },
     Rejected,
     Unknown,
 }
-pub fn acknowledge(result: Result<reqwest::Response, reqwest::Error>) -> Acknowledgment {
+pub async fn acknowledge(result: Result<reqwest::Response, reqwest::Error>) -> Acknowledgment {
     match result {
-        Ok(response) if response.status().as_u16() == 204 => Acknowledgment::Accepted,
+        Ok(response) if response.status().as_u16() == 200 => match run_id(response).await {
+            Some(run_id) => Acknowledgment::Accepted {
+                run_id: Some(run_id),
+            },
+            None => Acknowledgment::Unknown,
+        },
+        Ok(response) if response.status().as_u16() == 204 => {
+            Acknowledgment::Accepted { run_id: None }
+        }
         Ok(response)
             if response.status().is_client_error() && response.status().as_u16() != 408 =>
         {
@@ -198,6 +212,25 @@ pub fn acknowledge(result: Result<reqwest::Response, reqwest::Error>) -> Acknowl
         }
         _ => Acknowledgment::Unknown,
     }
+}
+
+/// The run id from a bounded `200` body. The supplied URLs are never followed.
+async fn run_id(mut response: reqwest::Response) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Dispatched {
+        workflow_run_id: u64,
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len() + chunk.len() > MAX_DISPATCH_BYTES {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice::<Dispatched>(&bytes)
+        .ok()
+        .map(|body| body.workflow_run_id)
+        .filter(|id| *id != 0)
 }
 
 /// Exactly one `POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches`
@@ -226,6 +259,7 @@ pub async fn dispatch(
             .send()
             .await,
     )
+    .await
 }
 
 #[cfg(test)]
@@ -555,9 +589,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_sends_one_fixed_body_and_maps_only_204_to_accepted() {
+    async fn dispatch_sends_one_fixed_body_and_maps_each_status() {
         for (status, expected) in [
-            (204, Acknowledgment::Accepted),
+            (204, Acknowledgment::Accepted { run_id: None }),
+            // A 200 without run details is not the documented answer.
             (200, Acknowledgment::Unknown),
             (201, Acknowledgment::Unknown),
             (202, Acknowledgment::Unknown),
@@ -614,5 +649,71 @@ mod tests {
             Acknowledgment::Unknown
         );
         assert_eq!(requests(&server).await, 0);
+    }
+
+    /// A raw HTTP/1.1 server that declares a longer body than it sends, then
+    /// closes, so the body read fails part-way.
+    async fn truncated_server() -> reqwest::Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url =
+            reqwest::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{\"workflow_run_id\":")
+                .await;
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn dispatch_takes_the_run_id_only_from_a_complete_documented_200() {
+        let documented = serde_json::json!({
+            "workflow_run_id": 36603616419u64,
+            "run_url": "https://api.github.com/repos/example-org/service/actions/runs/36603616419",
+            "html_url": "https://github.com/example-org/service/actions/runs/36603616419"
+        });
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("{WORKFLOW_ROUTE}/dispatches")))
+            .and(header("x-github-api-version", API_VERSION))
+            .and(body_json(serde_json::json!({"ref":"main"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(documented))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            dispatch(&http(), &base(&server), &TARGET, &auth()).await,
+            Acknowledgment::Accepted {
+                run_id: Some(36603616419)
+            }
+        );
+        // A 200 that does not carry a usable run id may or may not have run.
+        for body in [
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"workflow_run_id":0})),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"workflow_run_id":"71"})),
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"run_url":"https://api.github.com/"})),
+            ResponseTemplate::new(200).set_body_string("{\"workflow_run_id\":71,"),
+        ] {
+            let server = served("POST", &format!("{WORKFLOW_ROUTE}/dispatches"), body).await;
+            assert_eq!(
+                dispatch(&http(), &base(&server), &TARGET, &auth()).await,
+                Acknowledgment::Unknown
+            );
+            assert_eq!(requests(&server).await, 1);
+        }
+        let oversized = chunked_server(MAX_DISPATCH_BYTES + 1000).await;
+        assert_eq!(
+            dispatch(&http(), &oversized, &TARGET, &auth()).await,
+            Acknowledgment::Unknown
+        );
+        let truncated = truncated_server().await;
+        assert_eq!(
+            dispatch(&http(), &truncated, &TARGET, &auth()).await,
+            Acknowledgment::Unknown
+        );
     }
 }

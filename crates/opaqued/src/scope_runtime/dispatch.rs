@@ -98,8 +98,9 @@ impl Connector {
         })
     }
     /// Exactly one POST. A head that moved since review, or a head that cannot
-    /// be re-read, is `Rejected`: nothing was sent. GitHub's documented `204`
-    /// acknowledgment is `ApiAccepted`, never completion. Everything else is
+    /// be re-read, is `Rejected`: nothing was sent. GitHub's acknowledgment,
+    /// `200` with the new run's id (logged here, not retained in the ledger) or
+    /// the older `204`, is `ApiAccepted`, never completion. Everything else is
     /// `Unknown`, and `workflow_dispatch` has no idempotency key, so the run may
     /// or may not exist; the caller must never send again.
     pub async fn write(&self, target: &WorkflowTarget, head_sha: &str) -> Outcome {
@@ -113,7 +114,12 @@ impl Connector {
             _ => return Outcome::Rejected,
         }
         match workflow::dispatch(&self.client, &self.endpoint, &target, &self.authorization).await {
-            Acknowledgment::Accepted => Outcome::ApiAccepted,
+            Acknowledgment::Accepted { run_id } => {
+                if let Some(run_id) = run_id {
+                    tracing::info!(repository = %target.repository, workflow = %target.path, run_id, "GitHub accepted the dispatch");
+                }
+                Outcome::ApiAccepted
+            }
             Acknowledgment::Rejected => Outcome::Rejected,
             Acknowledgment::Unknown => Outcome::Unknown,
         }
