@@ -8,7 +8,8 @@ Keep public protocols provider-neutral and independently consumable.
 Organization SCIM integrations, collaboration delivery adapters, fleet collectors,
 enterprise management views and Kubernetes operator implementation belong in the
 separate private enterprise repository. Reusability alone does not make code public.
-Demo implementation and internal dogfood/research/evidence have separate private homes.
+Demo implementation lives in the public opaque-dev/opaque-demo repository. Internal
+dogfood, research and evidence have a separate private home.
 Do not copy private history, configuration, research or runtime records here.
 
 Preserve transactional revocation, durable single-use consumption and explicit unknown
