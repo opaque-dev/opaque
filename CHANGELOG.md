@@ -9,6 +9,8 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-30
+
 ### Fixed
 
 - A scoped `github.workflow.dispatch` that GitHub accepted is recorded as
