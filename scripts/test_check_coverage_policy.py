@@ -1,6 +1,7 @@
 import copy
 import json
 import subprocess
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,6 +11,82 @@ import check_coverage_policy as policy
 
 
 class CoveragePolicyTests(unittest.TestCase):
+    def retirement_fixture(self, root, package_name="ui"):
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        crate = root / "crates/ui"
+        crate.mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n')
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-qm", "historical crate"], cwd=root, check=True)
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        shutil.rmtree(crate)
+        record = {"schema": "opaque.coverage-retirements.v1", "packages": {
+            "ui": {"manifest": "crates/ui/Cargo.toml", "revision": revision, "reason": "separate demo"}}}
+        (root / "config").mkdir()
+        (root / "config/coverage-retirements.json").write_text(json.dumps(record))
+        return record
+
+    def test_documented_retirement_requires_absent_source_and_workspace_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.retirement_fixture(root)
+            names = {"kernel", "broker"}
+            self.assertEqual(policy.verified_retirements(root, names, self.baseline), {"ui"})
+            with self.assertRaises(policy.PolicyError):
+                policy.verified_retirements(root, names | {"ui"}, self.baseline)
+            (root / "crates/ui").mkdir()
+            with self.assertRaises(policy.PolicyError):
+                policy.verified_retirements(root, names, self.baseline)
+            (root / "crates/ui").rmdir()
+            (root / "crates/ui").symlink_to(root / "absent")
+            with self.assertRaises(policy.PolicyError):
+                policy.verified_retirements(root, names, self.baseline)
+
+    def test_retirement_cannot_name_a_foreign_manifest_revision_or_floor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = self.retirement_fixture(root)
+            path = root / "config/coverage-retirements.json"
+            for field, value in (("manifest", "../Cargo.toml"), ("revision", "0" * 40), ("reason", "")):
+                changed = copy.deepcopy(record)
+                changed["packages"]["ui"][field] = value
+                path.write_text(json.dumps(changed))
+                with self.assertRaises((policy.PolicyError, subprocess.CalledProcessError)):
+                    policy.verified_retirements(root, {"kernel", "broker"}, self.baseline)
+            path.write_text(json.dumps(record))
+            missing = copy.deepcopy(self.baseline)
+            del missing["packages"]["ui"]
+            with self.assertRaises(policy.PolicyError):
+                policy.verified_retirements(root, {"kernel", "broker"}, missing)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.retirement_fixture(root, package_name="different")
+            with self.assertRaises(policy.PolicyError):
+                policy.verified_retirements(root, {"kernel", "broker"}, self.baseline)
+
+    def test_retirement_retains_floors_provenance_and_remaining_ratchets(self):
+        measured = copy.deepcopy(self.measurement)
+        measured["workspace_packages"] = [row for row in measured["workspace_packages"] if row["package"] != "ui"]
+        definition = copy.deepcopy(self.policy)
+        del definition["packages"]["ui"]
+        result = policy.evaluate(measured, policy=definition, baseline=self.baseline,
+                                 target=self.target, retired_packages={"ui"})
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(policy.evaluate(measured, policy=definition, baseline=self.baseline,
+                                         target=self.target)["status"], "invalid")
+        exported = policy.baseline_from_evidence(measured, self.collection, "5" * 64,
+                                                self.baseline, definition, {"ui"})
+        self.assertEqual(exported["packages"]["ui"], self.baseline["packages"]["ui"])
+        self.assertEqual(exported["package_provenance"]["ui"]["source"], self.baseline["source"])
+        measured["workspace_packages"][1]["measured"]["lines"]["covered"] -= 1
+        regressed = policy.evaluate(measured, policy=definition, baseline=self.baseline,
+                                    target=self.target, retired_packages={"ui"})
+        self.assertIn("broker:lines:regressed", regressed["failures"])
+        with self.assertRaises(policy.PolicyError):
+            policy.baseline_from_evidence(measured, self.collection, "5" * 64,
+                                         self.baseline, definition, {"ui"})
+
     def setUp(self):
         self.target = "aarch64-apple-darwin"
         self.source = {"revision": "1" * 40, "tree_sha256": "2" * 64,

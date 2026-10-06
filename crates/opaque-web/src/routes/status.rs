@@ -5,11 +5,6 @@ use serde_json::json;
 use crate::AppState;
 
 pub async fn get_status(State(state): State<AppState>) -> Json<serde_json::Value> {
-    if state.demo {
-        return Json(
-            json!({ "mode": "demo", "daemon_running": false, "message": "Explicit demo mode. All activity is synthetic." }),
-        );
-    }
     let mut status = json!({
         "mode": "disconnected",
         "daemon_running": false,

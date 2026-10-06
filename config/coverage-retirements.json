@@ -1,0 +1,10 @@
+{
+  "schema": "opaque.coverage-retirements.v1",
+  "packages": {
+    "opaque-showcase": {
+      "manifest": "crates/opaque-showcase/Cargo.toml",
+      "revision": "2be3693d08c96c53f33c422c89b86d39c696ab0a",
+      "reason": "Demo implementation has a separate repository; remove the entire crate from public core while retaining its historical native coverage floors."
+    }
+  }
+}

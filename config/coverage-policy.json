@@ -13,7 +13,6 @@
     "opaque-policy-kernel": "kernel",
     "opaque-providers": "enforcement",
     "opaque-sandbox": "enforcement",
-    "opaque-showcase": "general",
     "opaque-tenant": "enforcement",
     "opaque-web": "general",
     "opaqued": "enforcement"

@@ -12,14 +12,13 @@ use tokio_util::sync::CancellationToken;
 
 pub mod config;
 pub mod daemon_client;
-mod demo;
 mod routes;
 pub use routes::api_error as routes_error;
 pub mod security;
 mod sse;
 
 #[derive(Parser)]
-#[command(name = "opaque-web", about = "Opaque live dashboard & demo explorer")]
+#[command(name = "opaque-web", about = "Opaque local dashboard")]
 pub struct DashboardOptions {
     /// Port to listen on.
     #[arg(long, default_value = "7380")]
@@ -28,10 +27,6 @@ pub struct DashboardOptions {
     /// Open the dashboard in the default browser on startup.
     #[arg(long)]
     pub open: bool,
-
-    /// Show synthetic example data explicitly; never connect to the daemon.
-    #[arg(long)]
-    pub demo: bool,
 
     /// Isolated data directory (config.toml, audit.db, web.token, run/opaqued.sock).
     #[arg(long)]
@@ -54,7 +49,6 @@ pub struct AppState {
     pub audit_db_path: PathBuf,
     pub cancel: CancellationToken,
     pub auth_token: String,
-    pub demo: bool,
 }
 
 /// Run a loopback dashboard with trusted application extensions.
@@ -80,14 +74,11 @@ pub async fn run_dashboard(
         audit_db_path: paths.audit_db,
         cancel: cancel.clone(),
         auth_token,
-        demo: args.demo,
     };
     let app = application_with_extension(state, bound_port, extension);
     let url = format!("http://127.0.0.1:{bound_port}");
     tracing::info!("opaque-web listening on {url}");
-    if args.demo {
-        tracing::info!("explicit demo mode: all example activity is synthetic");
-    }
+
     if args.open
         && let Err(e) = open_browser(&url)
     {
@@ -148,7 +139,6 @@ mod extension_tests {
             audit_db_path: dir.path().join("audit.db"),
             cancel: CancellationToken::new(),
             auth_token: "extension-fixture-owner".into(),
-            demo: true,
         };
         let extension = DashboardExtension {
             routes: axum::Router::new().route("/reports", get(|| async { "private report" })),
@@ -263,7 +253,7 @@ mod integration_tests {
         state: AppState,
     }
     impl Fixture {
-        fn new(demo: bool) -> Self {
+        fn new() -> Self {
             let dir = PathBuf::from("/tmp").join(format!("ow-{}", uuid::Uuid::new_v4()));
             let socket = dir.join("run/opaqued.sock");
             opaque_core::socket::ensure_socket_parent_dir(&socket).unwrap();
@@ -274,7 +264,6 @@ mod integration_tests {
                     audit_db_path: dir.join("audit.db"),
                     cancel: CancellationToken::new(),
                     auth_token: "router-test-token".into(),
-                    demo,
                 },
                 dir,
             }
@@ -304,7 +293,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn real_router_requires_bearer_for_every_read_api_including_stream() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         for uri in [
             "/api/status",
             "/api/tasks",
@@ -347,7 +336,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn configured_port_origin_works_and_cross_origin_and_rebinding_fail() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         for origin in ["http://localhost:9389", "http://127.0.0.1:9389"] {
             let req = request("/api/status")
                 .header("origin", origin)
@@ -384,7 +373,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn spa_is_identical_and_credential_free_with_or_without_authentication() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let response = fixture
             .app()
             .oneshot(request("/").body(Body::empty()).unwrap())
@@ -450,7 +439,6 @@ mod integration_tests {
             audit_db_path: dir.join("audit.db"),
             cancel: CancellationToken::new(),
             auth_token: file_token.clone(),
-            demo: false,
         };
         let app = || application(state.clone(), 9389);
         let bearer = format!("Bearer {file_token}");
@@ -537,7 +525,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn brand_assets_are_exact_public_bytes_under_existing_security_headers() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         for asset in routes::brand::assets::ASSETS {
             let uri = format!("/brand/{}", asset.path);
             let response = fixture
@@ -570,7 +558,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn brand_assets_do_not_expose_source_paths_or_bypass_origin_controls() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         for uri in [
             "/brand/manifest.json",
             "/brand/embedded.rs",
@@ -620,7 +608,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn missing_live_resources_never_fall_back_to_synthetic_data() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let status = json_body(
             fixture
                 .app()
@@ -646,27 +634,9 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn explicit_demo_never_reads_existing_live_policy_or_audit() {
-        let fixture = Fixture::new(true);
-        std::fs::write(&fixture.state.config_path, "malformed = [").unwrap();
-        std::fs::write(&fixture.state.audit_db_path, "not sqlite").unwrap();
-        for uri in [
-            "/api/status",
-            "/api/audit",
-            "/api/policy",
-            "/api/sessions",
-            "/api/tasks",
-        ] {
-            let response = fixture.app().oneshot(authenticated(uri)).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{uri}");
-            assert_eq!(json_body(response).await["mode"], "demo");
-        }
-    }
-
-    #[tokio::test]
     async fn live_audit_and_resume_stream_report_real_persisted_events() {
         use futures_util::StreamExt;
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let sink = SqliteAuditSink::new(fixture.state.audit_db_path.clone(), 90).unwrap();
         sink.emit(AuditEvent::new(AuditEventKind::OperationSucceeded).with_operation("test.first"));
         sink.emit(
@@ -753,7 +723,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn operation_inventory_never_substitutes_examples_for_a_disconnected_daemon() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let response = fixture
             .app()
             .oneshot(authenticated("/api/operations"))
@@ -766,29 +736,8 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn demo_operation_inventory_is_explicitly_synthetic() {
-        let fixture = Fixture::new(true);
-        let response = fixture
-            .app()
-            .oneshot(authenticated("/api/operations"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = json_body(response).await;
-        assert_eq!(body["mode"], "demo");
-        let operations = body["operations"].as_array().unwrap();
-        assert!(!operations.is_empty());
-        assert!(
-            operations
-                .iter()
-                .all(|operation| operation["availability"] == "synthetic"
-                    && operation["policy_status"] == "synthetic")
-        );
-    }
-
-    #[tokio::test]
     async fn live_operation_inventory_preserves_the_selected_daemons_capability_status() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let payload = serde_json::json!({"mode":"live", "operations":[
             {"name":"fixture.custom", "safety":"SensitiveOutput", "availability":"enabled",
              "mcp_exposed":false, "policy_status":"evaluated_per_request"},
@@ -810,7 +759,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn malformed_daemon_inventory_fails_instead_of_returning_a_partial_catalog() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let server = daemon_response(
             &fixture,
             "operations",
@@ -849,7 +798,7 @@ mod integration_tests {
                 "task",
             ),
         ] {
-            let fixture = Fixture::new(false);
+            let fixture = Fixture::new();
             let server = daemon_response(&fixture, method, result.clone()).await;
             let response = fixture.app().oneshot(authenticated(uri)).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
@@ -862,7 +811,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn status_reports_the_actual_approval_backend_from_version_rpc() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let server = daemon_response(
             &fixture,
             "version",
@@ -891,7 +840,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn workflow_check_requires_auth_and_only_calls_read_only_reconciliation() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let uri = "/api/tasks/task-123/reconcile";
         for (request_uri, bearer) in [
             (uri.to_string(), None),
@@ -951,7 +900,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn task_pagination_preserves_the_daemon_cursor() {
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new();
         let result = serde_json::json!({"tasks": [], "has_more": true, "next_cursor": "page-2"});
         let server = daemon_response(&fixture, "task_list", result).await;
         let response = fixture

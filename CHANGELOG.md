@@ -22,6 +22,18 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
   The staging task family, which already bound that run id, now uses the same
   code. The scope ledger does not retain the run id yet. See #148.
 
+### Changed
+
+- Public core no longer builds the showcase application or carries the internal
+  AX experiment, private staging workflow, experimental iOS scaffold, dormant
+  APNs transport, or dashboard `--demo` mode. The daemon's resource-authority
+  integration test now uses the public broker client and retains live identity,
+  provider-credential isolation, post-read revalidation, outage, and durable
+  revocation checks. Historical native coverage floors remain retained; explicit
+  whole-crate retirement requires the old manifest at an ancestor commit and
+  absence of the package and its complete source directory. Maintained crates'
+  thresholds and ratchets are unchanged.
+
 ## [0.6.0] - 2026-09-26
 
 ### Added

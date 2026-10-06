@@ -73,7 +73,7 @@ CASES = {
         "ssh_planning_without_tenant_is_denied_before_provider_io",
         "task_rpc_rechecks_changed_workspace_after_source_read_without_publishing",
     ),
-    "resource_authority_e2e": ("broker_identity_is_live_for_gateway_queries_disclosures_and_logout",),
+    "resource_authority_e2e": ("broker_identity_is_live_for_external_reads_and_durable_revocation",),
     "mcp_gateway_e2e": (
         "adapter_signed_tool_daemon_effect_receipt_and_replay_survive_restart",
         "policy_denial_malformed_input_and_generic_bypass_make_no_http_calls",
@@ -123,7 +123,6 @@ IGNORED_PREREQUISITES = {
     ("opaque-bounded-work", "opaque_bounded_work", "task_store::tests::task_pagination_scales"): "explicit 1k/100k receipt scalability measurement",
     ("opaque-web", "opaque_web", "sse::tests::audit_backlog_load_baseline"): "explicit long-running SSE load baseline",
     ("opaque-federation-runtime", "opaque_federation_runtime", "workload_attest::tests::live_signed_and_adhoc_child_socket_attestation"): "explicit signed/unsigned Node binaries and expected macOS Team ID",
-    ("opaque-showcase", "gateway", "bounded_demo::browser_approval_fixture"): "explicit local browser service fixture; runs up to 20 minutes",
 }
 for _name in ("onepassword::op_cli::tests::live_list_vaults", "onepassword::op_cli::tests::live_list_items",
               "onepassword::op_cli::tests::live_read_field"):

@@ -36,7 +36,7 @@ ssh-key crate backend).
 | opaque-approval | `crates/opaque-approval/src/approval_server.rs:421` | tokio-rustls `TlsAcceptor` | Approval HTTPS server (mobile device pairing and decisions) | a |
 | opaque-approval | `crates/opaque-approval/src/approval_server.rs:256` | rcgen `PKCS_ED25519` keygen and self-signed certificate | Approval server TLS identity | a (rcgen 0.14 has an `aws_lc_rs` backend feature) |
 | opaque-federation-runtime | `crates/opaque-federation-runtime/src/export.rs:388-455` | tokio-rustls TLS client, custom roots | SIEM export streams | a |
-| eight crates | `reqwest` with `rustls-tls` (workspace `Cargo.toml:83`) | rustls via hyper-rustls | Outbound HTTPS: OIDC, cloud providers, push, federation fetch | a, with the graph caveat below |
+| HTTPS clients | `reqwest` with `rustls-tls` (workspace `Cargo.toml:83`) | rustls via hyper-rustls | Outbound HTTPS: OIDC, cloud providers, federation fetch | a, with the graph caveat below |
 | opaque-core (indirect) | `jsonschema` 0.45 pulls `reqwest` 0.13 | second rustls consumer | Schema reference fetching | a, same caveat |
 | test harnesses | `crates/opaque-approval/src/approval_server.rs:759`, `approval_server/workstation.rs:426`, `factors.rs:912,987` | rustls ring provider installs | Test TLS setup | a |
 | opaqued | `crates/opaqued/Cargo.toml:43` | direct `ring` dependency | Nothing: no `ring::` usage exists in the crate | a (delete it) |
@@ -104,7 +104,6 @@ outside the validated boundary in the interim.
 | opaque-native-approval | `crates/opaque-native-approval/src/lib.rs:173-181` | SHA-256 | Display digest of the approval reason (UI only) | b (low priority) |
 | opaque-core | `crates/opaque-core/src/inference.rs:31` | SHA-256 (`sha256`/`prompt_sha256` helpers) | Bounded-work inference receipt digests: profile, prompt, output, and source-snapshot hashes | b |
 | opaque-sandbox | `crates/opaque-sandbox/src/lib.rs:151` | SHA-256 | Sandbox profile fingerprint (`profile_sha256` in execution evidence) | b |
-| opaque-showcase | `src/approval_oauth.rs`, `src/server.rs`, `src/bounded_demo.rs` | SHA-256 | Demo PKCE and evidence hashes; showcase is sales collateral outside default members | b (lowest priority) |
 
 All of these are SHA-256 or HMAC-SHA-256 through RustCrypto crates. The
 algorithms are approved; the implementations are not validated. The
@@ -146,9 +145,7 @@ recompiles them against the FIPS module with no source change:
 |---|---|---|---|
 | opaqued | `crates/opaqued/src/identity/oidc.rs:269-298` | RS256 verify | OIDC id_token validation |
 | opaque-core | `crates/opaque-core/src/resource_auth.rs:24` | RS256 verify | Resource authority JWTs |
-| opaque-approval | `crates/opaque-approval/src/push.rs:302` | ES256 sign | APNs push authentication |
 | opaque-providers | `crates/opaque-providers/src/gcp/client.rs:648-650` | RS256 sign | GCP service account tokens |
-| opaque-showcase | `src/approval_oauth.rs` | RS256/JWKS | Demo OAuth flows |
 
 All class (a).
 

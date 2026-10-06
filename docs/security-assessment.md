@@ -36,8 +36,8 @@
 > custody check), L-3 (`SAFETY` documentation on the unsafe FFI blocks),
 > L-4 (double-invocation warning in the LocalAuthentication callback).
 > Still open, with recommendations inline: H-8 startup session preflight,
-> screen-lock and Fast User Switching testing (§4.1.2), APNs relay wiring
-> (compiled but deliberately unwired), L-2, L-6, L-7, L-9, L-10, and the
+> screen-lock and Fast User Switching testing (§4.1.2), L-2, L-6, L-7, L-9,
+> L-10, and the
 > polkit policy-file integrity check (§4.2.2).
 >
 > Appendix A/B file lists and dependency counts are frozen at 2026-02-12.
@@ -858,14 +858,10 @@ TLS identity so paired devices can pin the certificate across restarts
 (`../crates/opaque-approval/src/approval_server.rs`,
 `load_or_create_tls_identity`); there is no unpinned fallback path.
 
-**Note (2026-09-14):** The APNs push relay
-(`../crates/opaque-approval/src/push.rs`) is compiled and unit-tested but
-deliberately NOT wired: the LAN approval server is the live second-device
-transport, and the relay activates only when an `[approval.apns]` config
-surface lands, since it is unusable without Apple credentials. Wiring it is
-a product decision (credential provisioning, fallback ordering between LAN
-and push, and notification content policy), not a code gap; leaving it dark
-adds no attack surface.
+**Update (2026-10-06):** The unwired APNs relay and experimental iOS scaffold
+were retired from public core. No iOS approval product ships. The supported
+paired-second-device factor remains desktop-to-desktop; see
+[mobile approval availability](mobile-approvals.md).
 
 #### 4.3.3 Challenge Construction Security
 

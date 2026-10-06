@@ -17,9 +17,6 @@ pub async fn list_tasks(
     State(state): State<AppState>,
     Query(params): Query<TaskParams>,
 ) -> ApiResult {
-    if state.demo {
-        return (StatusCode::OK, Json(json!({"mode":"demo", "tasks": []})));
-    }
     task_call(
         &state,
         "task_list",
@@ -30,24 +27,12 @@ pub async fn list_tasks(
 }
 
 pub async fn get_task(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
-    if state.demo {
-        return super::api_error(
-            StatusCode::NOT_FOUND,
-            "No live task receipts are available in demo mode.",
-        );
-    }
     task_call(&state, "task_get", json!({"task_id":id}), "task").await
 }
 
 /// Refresh only the provider's workflow evidence. This endpoint cannot approve,
 /// dispatch, retry, or mint task authority; the daemon enforces owner scope.
 pub async fn reconcile_task(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
-    if state.demo {
-        return super::api_error(
-            StatusCode::NOT_FOUND,
-            "Workflow evidence is unavailable in demo mode.",
-        );
-    }
     task_call(&state, "task_reconcile", json!({"task_id":id}), "task").await
 }
 

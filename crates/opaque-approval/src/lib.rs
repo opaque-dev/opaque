@@ -5,7 +5,7 @@
 //! This crate hosts the *mechanisms* backing `opaque_core::approval_gate`'s
 //! `ApprovalGate` trait: device pairing, FIDO2, the factor registry, native
 //! (LocalAuthentication / polkit) prompting, the LAN approval-server relay,
-//! and the dormant APNs push transport.
+//! and scoped review verification.
 //!
 //! The trait itself — and its `NativeApprovalGate` / `InsecureAutoApproveGate`
 //! implementors — stay in `opaqued::enclave` (they hold daemon-private state
@@ -26,6 +26,5 @@ pub mod factors;
 pub mod fido2;
 #[allow(dead_code)]
 pub mod pairing;
-pub mod push;
 pub mod remote;
 pub mod scope_review;

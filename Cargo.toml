@@ -16,33 +16,6 @@ members = [
   "crates/opaque-federation-runtime",
   "crates/opaque-mcp",
   "crates/opaque-web",
-  "crates/opaque-showcase",
-]
-
-# opaque-showcase is sales/demo collateral (a showcase web app), not core
-# product. It is a full workspace member (it cannot be removed: opaqued's
-# tests/resource_authority_e2e.rs builds and runs it together with opaqued to
-# verify a real security contract — broker identity/token isolation across
-# gateway queries), but it is deliberately excluded from the default member
-# set so plain `cargo build` / `cargo test` (no arguments) skip compiling it.
-# Use `cargo build --workspace` / `cargo test --workspace`, or
-# `cargo build -p opaque-showcase`, to include it explicitly.
-default-members = [
-  "crates/opaque-policy-kernel",
-  "crates/opaque-core",
-  "crates/opaque-native-approval",
-  "crates/opaque-providers",
-  "crates/opaque-sandbox",
-  "crates/opaque-bounded-work",
-  "crates/opaqued",
-  "crates/opaque",
-  "crates/opaque-approval",
-  "crates/opaque-approve-helper",
-  "crates/opaque-approver",
-  "crates/opaque-tenant",
-  "crates/opaque-federation-runtime",
-  "crates/opaque-mcp",
-  "crates/opaque-web",
 ]
 
 [workspace.package]

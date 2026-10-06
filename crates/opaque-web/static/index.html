@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="/brand/opaque-mark.svg">
 <link rel="stylesheet" href="/brand/opaque.css">
 <style>
-/* Opaque workspace. The website, dashboard and demo share /brand/opaque.css. */
+/* Opaque workspace. The website and dashboard share /brand/opaque.css. */
 *,
 *::before,
 *::after {
@@ -238,9 +238,6 @@ header {
   background: var(--green)
 }
 
-.mode-dot.demo {
-  background: var(--accent)
-}
 
 .mode-dot.disconnected,
 .mode-dot.error {
@@ -1947,8 +1944,6 @@ function initialState() { return {
   tasksNextCursor: null,
   tasksHasMore: false,
   expandedTask: null,
-  demoTimer: null,
-  demoSeqCounter: 100,
   statusTimer: null,
   relativeTimeTimer: null,
   sessionCountdownTimer: null,
@@ -2049,7 +2044,7 @@ function lockDashboard(message, focus) {
   auth.requests.forEach(function(controller) { controller.abort(); });
   auth.requests.clear();
   if (state.sseController) state.sseController.abort();
-  ['sseRetryTimer','demoTimer'].forEach(function(key) { if (state[key]) clearTimeout(state[key]); });
+  ['sseRetryTimer'].forEach(function(key) { if (state[key]) clearTimeout(state[key]); });
   ['statusTimer','sessionCountdownTimer','relativeTimeTimer'].forEach(function(key) { if (state[key]) clearInterval(state[key]); });
   if (state.auditFrame !== null) cancelAnimationFrame(state.auditFrame);
   state = initialState();
@@ -2385,8 +2380,7 @@ function applyStatus(data, generation) {
       banner.textContent = 'TEST APPROVAL — No human consent is requested. Use only disposable fixtures. Connected to ' + (data.socket_path || '') + ' · Read-only dashboard';
     } else if (state.mode === 'live') {
       banner.textContent = 'Connected · ' + (data.socket_path || '') + (data.trust_domain_enforced === true ? ' · Broker custody enforced' : ' · Shared-user custody') + ' · Read-only dashboard';
-    } else if (state.mode === 'demo') {
-      banner.textContent = 'DEMO — Synthetic example activity. Restart without --demo to inspect your own tasks.';
+
     } else {
       banner.textContent = (data.message || 'Daemon disconnected.') + ' Selected socket: ' + (data.socket_path || 'unknown') + '. Existing audit history may still be available.';
     }
@@ -2407,7 +2401,6 @@ function pollStatus() {
     state.mode = 'error';
     state.daemonRunning = false;
     updateModeIndicator();
-    stopDemoMode();
     var banner = document.getElementById('connection-banner');
     banner.className = 'connection-banner error';
     banner.textContent = error.message + ' Retrying connection every 10 seconds.';
@@ -2584,9 +2577,7 @@ function renderAuditList() {
   list.textContent = '';
 
   if (state.auditEvents.length === 0) {
-    var msg = state.auditError || (state.mode === 'demo'
-      ? 'Demo mode active. Synthetic events will appear shortly.'
-      : 'No audit events match this view. Run a task or change the filters.');
+    var msg = state.auditError || 'No audit events match this view. Run a task or change the filters.';
     list.appendChild(el('div', { className: 'audit-empty' }, msg));
     return;
   }
@@ -2701,7 +2692,7 @@ function auditFilterParams() {
 function applyFilters() {
   if (!auth.unlocked) return Promise.resolve();
   var authGeneration = auth.generation;
-  if (state.mode !== 'demo' && state.auditAvailable === false) {
+  if (state.auditAvailable === false) {
     state.auditGeneration++;
     state.auditRefreshRequested = false;
     state.auditError = 'Audit history is unavailable in the selected client state. No local audit source is available.';
@@ -2785,7 +2776,6 @@ async function connectSSE() {
   if (!auth.unlocked) return;
   var generation = auth.generation;
   var response, reader;
-  if (state.mode === 'demo') { setStreamStatus('Synthetic demo activity'); startDemoMode(); return; }
   if (state.auditAvailable === false) { setStreamStatus('No local audit source. Status checks will detect when it becomes available.'); return; }
   var controller = new AbortController();
   state.sseController = controller;
@@ -2840,135 +2830,11 @@ async function connectSSE() {
 
 function reconnectSSE() {
   if (!auth.unlocked) return;
-  stopDemoMode();
   if (state.sseController) state.sseController.abort();
   if (state.sseRetryTimer) clearTimeout(state.sseRetryTimer);
   state.sseRetryTimer = null;
   state.sseRetryDelay = 3000;
   connectSSE();
-}
-
-// ============================================================================
-// DEMO MODE
-// ============================================================================
-
-var DEMO_OPERATIONS = [
-  'github.set_actions_secret',
-  'github.set_codespaces_secret',
-  'github.set_dependabot_secret',
-  'github.set_org_secret',
-  'github.list_secrets',
-  'github.delete_secret',
-  'gitlab.set_ci_variable',
-  'onepassword.list_vaults',
-  'onepassword.list_items',
-  'bitwarden.list_projects',
-  'bitwarden.list_secrets',
-  'sandbox.exec',
-  'test.noop',
-];
-
-var DEMO_KINDS = [
-  'request.received',
-  'policy.allowed',
-  'policy.denied',
-  'approval.granted',
-  'operation.succeeded',
-  'operation.failed',
-  'lease.hit',
-  'session.created',
-];
-
-var DEMO_DETAILS = [
-  'repo=acme/api secret=DATABASE_URL',
-  'project=infra/deploy key=DEPLOY_TOKEN',
-  'factor=local_bio cached=true',
-  'SENSITIVE_OUTPUT blocked for agent clients',
-  'reused existing approval lease',
-  'matched rule github.* [any] ALLOW',
-  'default deny (no matching rule)',
-  '1Password CLI not found',
-  'session label=claude-code-main',
-  'vault=Engineering item=API Keys',
-  'created new agent session ttl=3600',
-  'secret_name=NPM_TOKEN scope=actions',
-];
-
-function randomItem(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function generateUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    var r = Math.random() * 16 | 0;
-    var v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
-function generateDemoEvent() {
-  var kind = randomItem(DEMO_KINDS);
-  var operation = randomItem(DEMO_OPERATIONS);
-  var outcome = 'ok';
-  var level = 'info';
-  var safety = 'Safe';
-  var latency = null;
-
-  if (kind === 'policy.denied') {
-    outcome = 'denied';
-    level = 'warn';
-  } else if (kind === 'operation.failed') {
-    outcome = 'error';
-    level = 'error';
-    latency = Math.floor(Math.random() * 5000) + 500;
-  } else if (kind === 'operation.succeeded') {
-    latency = Math.floor(Math.random() * 2000) + 50;
-  } else if (kind === 'approval.granted') {
-    latency = Math.floor(Math.random() * 3000) + 200;
-  }
-
-  if (operation === 'sandbox.exec') safety = 'SensitiveOutput';
-  if (operation === 'onepassword.read_field' || operation === 'bitwarden.read_secret') safety = 'Reveal';
-
-  state.demoSeqCounter++;
-
-  return {
-    event_id: generateUUID(),
-    sequence_number: state.demoSeqCounter,
-    ts_utc_ms: Date.now(),
-    level: level,
-    kind: kind,
-    request_id: generateUUID(),
-    operation: operation,
-    safety: safety,
-    outcome: outcome,
-    latency_ms: latency,
-    detail: randomItem(DEMO_DETAILS),
-  };
-}
-
-function startDemoMode() {
-  if (!auth.unlocked || state.mode !== 'demo' || state.demoTimer) return;
-  var generation = auth.generation;
-
-  function scheduleNext() {
-    var delay = 3000 + Math.floor(Math.random() * 2000);
-    state.demoTimer = setTimeout(function() {
-      if (!currentAuth(generation)) return;
-      var event = generateDemoEvent();
-      prependAuditEvent(event);
-      scheduleNext();
-    }, delay);
-  }
-
-  scheduleNext();
-}
-
-function stopDemoMode() {
-  if (state.demoTimer) {
-    clearTimeout(state.demoTimer);
-    state.demoTimer = null;
-  }
 }
 
 // ============================================================================
@@ -3277,7 +3143,6 @@ function renderOperations(operations) {
         enabled: 'Handler enabled',
         disabled: 'Handler disabled',
         fixture_only: 'Fixture only — no production transport',
-        synthetic: 'Synthetic demo example',
       }[o.availability] || 'Availability unavailable';
 
       var card = el('div', { className: 'op-card' }, [
@@ -3364,8 +3229,7 @@ function renderTasks() {
     if (state.tasksCursor) {
       empty.appendChild(el('p', null, 'No more receipts on this page.'));
       empty.appendChild(el('button', {className:'btn', onclick:function() { loadTasks(null); }}, 'Newest receipts'));
-    } else if (state.mode === 'demo') {
-      empty.textContent = 'Demo mode contains synthetic audit, policy, and session examples. Restart without --demo to review real bounded task receipts.';
+
     } else {
       empty.appendChild(el('p', null, 'No bounded tasks yet. Create a task from an exact manifest using the local CLI, then return here to review its receipt.'));
       empty.appendChild(el('p', null, [el('code', null, 'opaque task --help')]));

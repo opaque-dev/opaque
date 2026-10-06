@@ -28,7 +28,6 @@ The default URL is `http://127.0.0.1:7380`. Start the daemon separately with mat
 The page opens **LOCKED**. Read the token from the selected data directory's
 `web.token` file, enter it in **Owner token**, then select **Unlock dashboard**.
 The file is owner-readable (`0600`); the URL and page source contain no bearer.
-Demo mode uses the same unlock flow with its isolated token file.
 
 The token stays in this page's memory and authenticated request headers. It is
 never saved in browser storage. **Lock dashboard** clears the token, displayed
@@ -58,20 +57,15 @@ their evidence. New events preserve the focused row when it remains in the view.
 **Clear view** clears only the displayed audit events; it does not delete the
 audit database or stop new events from arriving.
 
-## Connection and demo states
+## Connection states
 
 - **LIVE:** the selected daemon answered a version/health check. An insecure auto-approval backend or workstation test mode adds a conspicuous **TEST APPROVAL** banner, even though the broker connection is live. The banner identifies its socket. Individual data sources can still report an error.
 - **DISCONNECTED:** the daemon is unavailable. Persisted audit history and readable policy remain inspectable. Sessions and tasks show an actionable error.
 - **ERROR:** the web API cannot be reached. An authentication rejection locks the dashboard; enter the current owner token to reconnect.
-- **DEMO:** enabled only by `--demo`. Synthetic audit, policy, and session examples are clearly marked, and the daemon is never contacted. Demo mode contains no live task receipts.
-
-```bash
-./target/debug/opaque-web --demo --data-dir /tmp/opaque-demo --port 7381 --open
-```
 
 The dashboard never turns missing data, daemon failures, or API authentication errors into synthetic activity. After successful unlock, it polls daemon status every ten seconds and resumes the audit stream after disconnections. Locked pages perform no protected reads or reconciliation.
 
-The live operation catalog comes from the selected daemon's registry and configured handlers. Availability distinguishes enabled, disabled, and fixture-only operations. Approval labels describe defaults; policy permission is evaluated for each request. Demo catalog entries are synthetic, and a disconnected daemon cannot supply a live catalog. Audit catch-up drains bounded pages immediately and polls every 500 ms after reaching the tail; dashboard refreshes are coalesced and rendering is batched per animation frame.
+The live operation catalog comes from the selected daemon's registry and configured handlers. Availability distinguishes enabled, disabled, and fixture-only operations. Approval labels describe defaults; policy permission is evaluated for each request. A disconnected daemon cannot supply a live catalog. Audit catch-up drains bounded pages immediately and polls every 500 ms after reaching the tail; dashboard refreshes are coalesced and rendering is batched per animation frame.
 
 ## Views
 
@@ -88,7 +82,7 @@ The live operation catalog comes from the selected daemon's registry and configu
 
 **Policy** displays the selected config file. A seal file's existence is labeled as “Seal file present (not verified)”; the dashboard does not claim cryptographic validation or that this file is the daemon's active policy.
 
-**Sessions** lists the daemon's visible session IDs, labels, and expiration times. Session tokens are not returned. **Operations** shows the selected daemon's actual operation catalog, including enabled, disabled and fixture-only availability. Demo entries are explicitly synthetic. Catalog membership and default approval labels do not grant permission to execute an operation.
+**Sessions** lists the daemon's visible session IDs, labels, and expiration times. Session tokens are not returned. **Operations** shows the selected daemon's actual operation catalog, including enabled, disabled and fixture-only availability. Catalog membership and default approval labels do not grant permission to execute an operation.
 
 Organization fleet views are composed by a separately packaged management
 console. The local dashboard contains five views and has no collector credential
@@ -115,9 +109,9 @@ This is a local read-only client of the existing daemon trust model. The daemon 
 | `/api/audit/stream` | GET | SSE over authenticated fetch; optional `Last-Event-ID` |
 | `/api/policy` | GET | Selected config and seal-file presence |
 | `/api/sessions` | GET | Visible session metadata through IPC |
-| `/api/operations` | GET | Selected daemon's operation catalog and handler availability; synthetic in demo mode |
+| `/api/operations` | GET | Selected daemon's operation catalog and handler availability |
 
-Unavailable data returns an explicit non-2xx JSON error. Status returns the disconnected state as a successful health response so the page can explain it. Demo responses always carry `mode: "demo"`.
+Unavailable data returns an explicit non-2xx JSON error. Status returns the disconnected state as a successful health response so the page can explain it.
 
 ## Verification
 
@@ -126,7 +120,7 @@ cargo test -p opaque-web
 node --test crates/opaque-web/tests/dashboard.test.cjs
 ```
 
-The tests exercise the real router, bearer protection on all API routes and the stream, configurable-port Origin/Host validation, credential-free HTML, explicit unlock/lock and stale-response suppression, disconnected and explicit-demo behavior, isolated path resolution, live SQLite query/stream resumption, daemon IPC response shapes for sessions and tasks, reconciliation authentication and method isolation, and dispatch/workflow wording with preserved approval provenance.
+The tests exercise the real router, bearer protection on all API routes and the stream, configurable-port Origin/Host validation, credential-free HTML, explicit unlock/lock and stale-response suppression, disconnected behavior, isolated path resolution, live SQLite query/stream resumption, daemon IPC response shapes for sessions and tasks, reconciliation authentication and method isolation, and dispatch/workflow wording with preserved approval provenance.
 
 ### Tenant inference receipts
 
