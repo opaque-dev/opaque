@@ -478,5 +478,4 @@ operation families, and what's production-ready today.
 - [Google Secret Manager setup](gcp.md)
 - [Azure Key Vault setup](azure.md)
 - [Bitwarden setup](bitwarden.md)
-- [Demo recordings](demos.md)
 - [Deployment & OS approval backends](deployment.md)

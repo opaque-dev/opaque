@@ -9,6 +9,14 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+### Removed
+
+- Orphaned terminal recordings and their stale regeneration guide, unused
+  service templates, a showcase model-evaluation one-off, and private-PRD Git
+  ignore exceptions. The scope-recovery wrapper's correlation-input and forged
+  review checks now run as Cargo tests, including the example in workspace test
+  discovery.
+
 ### Fixed
 
 - A scoped `github.workflow.dispatch` that GitHub accepted is recorded as

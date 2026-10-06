@@ -20,7 +20,7 @@ Start with one operation, then inspect the boundary before widening access.
 
 ## Background
 
-[Recordings](demos.md), [why we built Opaque](blog/why-we-built-opaque.md), and
+[Why we built Opaque](blog/why-we-built-opaque.md) and
 [deferred work](roadmap-deferred.md).
 
 The [February 12 assessment](security-assessment.md) and

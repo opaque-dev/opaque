@@ -18,27 +18,6 @@ The current implementation has multiple **P0 / CRITICAL** issues that violate th
 3. The "secret transporter" control (`secret_ref_names` + `[rules.secret_names]`) is bypassable because requests are not reliably populated with secret names.
 4. Audit persistence stores `AuditEvent.detail` verbatim; some detail strings are constructed from user-controlled / secret-adjacent data (e.g., command argv).
 
-## Demos (Recorded)
-
-These demos use **dummy values only** and run with a throwaway `HOME`/`XDG_RUNTIME_DIR`.
-
-- Sandbox stdout leak + secret-name constraint bypass:
-  - Script: `scripts/demo_security_sandbox_secret_leak.sh`
-  - Output: `assets/demos/security-sandbox-secret-leak.gif` (`.cast` alongside)
-- Audit persistence leak via `detail`:
-  - Script: `scripts/demo_security_audit_detail_leak.sh`
-  - Output: `assets/demos/security-audit-detail-leak.gif` (`.cast` alongside)
-- 1Password plaintext return (via mock Connect server):
-  - Script: `scripts/demo_security_onepassword_read_field.sh`
-  - Mock server: `scripts/mock_1password_connect.py`
-  - Output: `assets/demos/security-onepassword-read-field.gif` (`.cast` alongside)
-
-Regenerate all demos (including README ones):
-
-```bash
-./scripts/record_demos.sh
-```
-
 ## Findings
 
 ### P0: `onepassword.read_field` returns plaintext secrets (misclassified as `SAFE`)

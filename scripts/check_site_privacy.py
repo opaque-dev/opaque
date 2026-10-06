@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # mkdocs.yml alone must not authorize publication of an internal document.
 PUBLIC_ROUTES = frozenset({
     "", "adversarial-security-review-2026-02-14", "architecture", "audit-analytics",
-    "aws", "azure", "gcp", "bitwarden", "blog/why-we-built-opaque", "demos", "deployment",
+    "aws", "azure", "gcp", "bitwarden", "blog/why-we-built-opaque", "deployment",
     "bounded-work", "compliance/certification-roadmap", "compliance/control-mapping",
     "compliance/fips-assessment", "compliance/hardening", "compliance/verifying-releases",
     "enterprise-architecture", "evaluation-guide", "evidence-checkpoints", "federation", "getting-started",
