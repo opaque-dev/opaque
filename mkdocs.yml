@@ -138,7 +138,6 @@ nav:
           - Authority Policy Manifests: authority-policy.md
           - Coverage and Assertions: testing-coverage.md
           - Organization Architecture: enterprise-architecture.md
-          - Recordings: demos.md
       - Background:
           - Historical Assessment (February 12): security-assessment.md
           - Historical Review (February 14): adversarial-security-review-2026-02-14.md

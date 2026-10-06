@@ -1,3 +1,5 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 //! Public-core reproduction with synthetic identities, signatures and provider
 //! effects. Uses real review/authority stores and a real SIGKILL. No network,
 //! enterprise source, native human-presence claim or production credentials.
@@ -418,5 +420,62 @@ fn main() {
     if let Err(error) = result {
         eprintln!("scope-recovery: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_correlation_is_refused_before_creating_producer_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("refused-run");
+        let input = directory.path().join("request-ids.json");
+        for ids in [
+            vec!["duplicate".to_string(); WORKERS],
+            vec!["only-one".to_string()],
+            (0..WORKERS)
+                .map(|i| format!("{}-{i}", "x".repeat(129)))
+                .collect(),
+            (0..WORKERS).map(|i| format!("invalid space-{i}")).collect(),
+        ] {
+            fs::write(&input, serde_json::to_vec(&ids).unwrap()).unwrap();
+            assert!(run(&output, Some(&input)).is_err());
+            assert!(!output.exists(), "invalid IDs created producer state");
+        }
+        for bytes in [b" ".repeat(16385), b"not JSON".to_vec()] {
+            fs::write(&input, bytes).unwrap();
+            assert!(run(&output, Some(&input)).is_err());
+            assert!(!output.exists());
+        }
+
+        let fifo = directory.path().join("request-ids.fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: name is a live NUL-terminated path; mkfifo retains no pointer.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(run(&output, Some(&fifo)).is_err());
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn distinct_external_ids_and_default_ids_are_accepted() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("request-ids.json");
+        let ids: Vec<_> = (0..WORKERS)
+            .map(|i| format!("run-1:worker-{i}/action_1"))
+            .collect();
+        fs::write(&input, serde_json::to_vec(&ids).unwrap()).unwrap();
+        assert_eq!(request_ids(Some(&input)).unwrap(), ids);
+        let defaults = request_ids(None).unwrap();
+        assert_eq!(defaults.len(), WORKERS);
+        assert_eq!(
+            defaults
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            WORKERS
+        );
     }
 }

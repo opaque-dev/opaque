@@ -8,10 +8,7 @@ CHANGELOG-release.md
 
 # Development artifacts
 plan-*.md
-# Keep the reviewed private PRDs; other scratch task artifacts remain ignored.
 /tasks/*
-!/tasks/prd-attestor-seam.md
-!/tasks/prd-bounded-agent-work.md
 *-explorer.html
 .wrangler/
 .playwright-cli/

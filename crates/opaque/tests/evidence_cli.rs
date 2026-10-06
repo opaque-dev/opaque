@@ -14,6 +14,174 @@ fn path(path: &Path) -> &str {
 }
 
 #[test]
+fn scope_review_cli_verifies_signed_export_and_rejects_forged_receipt() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use opaque_approval::scope_review::{CurrentAuthority, ScopeReviewStore};
+    use opaque_bounded_work::scope_store::{AuthorityGuard, ScopeStore};
+    use opaque_core::{
+        evidence_checkpoint as wire,
+        scope::{
+            AdmissionEvidence, AuthorityOwner, FieldConstraint, MinimumApproval, PreparedAction,
+            ScopeGrant, ScopeRequirements,
+        },
+        scope_review::{
+            Decision, DecisionReceipt, EMPTY_RECEIPT_DIGEST, ReviewAuthority, ReviewSubject,
+            ReviewerDecision,
+        },
+    };
+
+    struct ReviewedAuthority {
+        store: ScopeReviewStore,
+        current: CurrentAuthority,
+        receipt: DecisionReceipt,
+    }
+    impl AuthorityGuard for ReviewedAuthority {
+        fn verify_scope(&self, grant: &ScopeGrant, now: i64) -> Result<(), String> {
+            self.store
+                .revalidate_scope(grant, &self.receipt, &self.current, now)
+                .map_err(|error| error.to_string())
+        }
+        fn verify_action(
+            &self,
+            grant: &ScopeGrant,
+            _: &PreparedAction,
+            _: &AdmissionEvidence,
+            now: i64,
+        ) -> Result<(), String> {
+            self.verify_scope(grant, now)
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = directory.path();
+    let owner = AuthorityOwner {
+        tenant_id: "synthetic-tenant".into(),
+        broker_id: "synthetic-broker".into(),
+        generation: "one".into(),
+    };
+    let broker = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let reviewer = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+    let broker_public = wire::hex(broker.verifying_key().as_bytes());
+    let draft = ScopeGrant {
+        schema_version: 1,
+        scope_id: "scope-1".into(),
+        root_id: "scope-1".into(),
+        parent_id: None,
+        owner: owner.clone(),
+        issuer: "requester".into(),
+        subject: "requester".into(),
+        operation: "synthetic.case.set_status".into(),
+        provider_profile_digest: "1".repeat(64),
+        resources: vec!["case-1".into()],
+        fields: vec![FieldConstraint {
+            field: "status".into(),
+            allowed_values: vec!["resolved".into()],
+        }],
+        not_before: 1000,
+        expires_at: 2000,
+        delegations_remaining: 0,
+        max_charged_attempts: 4,
+        max_distinct_resources: 1,
+        requirements: ScopeRequirements {
+            policy_digest: "2".repeat(64),
+            minimum_approval: MinimumApproval::ScopeIssuance,
+            evaluator_checks: vec![],
+        },
+        issuance_receipt_digest: EMPTY_RECEIPT_DIGEST.into(),
+    };
+    let current = CurrentAuthority::new(ReviewAuthority {
+        owner: owner.clone(),
+        requester_id: draft.subject.clone(),
+        reviewer_id: "synthetic-reviewer".into(),
+        device_id: "synthetic-device".into(),
+        reviewer_public_key: wire::hex(reviewer.verifying_key().as_bytes()),
+        required_role: "approver".into(),
+        policy_digest: draft.requirements.policy_digest.clone(),
+        authority_epoch: 1,
+        enrollment_epoch: 1,
+    })
+    .unwrap();
+    let reviews =
+        ScopeReviewStore::open(&root.join("reviews.db"), owner.clone(), broker, 1000).unwrap();
+    let review = reviews
+        .issue(
+            ReviewSubject::issuance(&draft).unwrap(),
+            &current,
+            100,
+            1000,
+        )
+        .unwrap();
+    let decision =
+        ReviewerDecision::sign(&review, &broker_public, &reviewer, Decision::Approve, 1000)
+            .unwrap();
+    let receipt = reviews
+        .submit(&review.document.round_id, &decision, &current, 1000)
+        .unwrap();
+    let grant = reviews.materialize_scope(&receipt, &current, 1000).unwrap();
+    let authority = ReviewedAuthority {
+        store: reviews,
+        current,
+        receipt: receipt.clone(),
+    };
+    let store = ScopeStore::open(&root.join("scopes.db"), owner.clone()).unwrap();
+    store.issue_scope(grant, &authority, 1000).unwrap();
+    let evidence = store.export_evidence().unwrap();
+    let producer = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+    let trust = wire::ProducerTrust {
+        schema_version: 1,
+        scope: wire::Scope {
+            tenant_id: owner.tenant_id,
+            broker_id: owner.broker_id,
+            stream_id: "scope-ledger".into(),
+            generation: owner.generation,
+        },
+        key_id: wire::key_id(&producer.verifying_key()),
+        public_key: wire::hex(producer.verifying_key().as_bytes()),
+    };
+    let (checkpoint, export) =
+        wire::create_scope_checkpoint(&evidence, &trust, &producer, None, "synthetic-test".into())
+            .unwrap();
+    let enrollment_path = root.join("producer.json");
+    let checkpoint_path = root.join("checkpoint.json");
+    let export_path = root.join("scope.json");
+    let receipts_path = root.join("receipts.json");
+    let pin = wire::checkpoint_digest(&checkpoint).unwrap();
+    std::fs::write(&enrollment_path, wire::canonical(&trust).unwrap()).unwrap();
+    std::fs::write(&checkpoint_path, wire::canonical(&checkpoint).unwrap()).unwrap();
+    std::fs::write(&export_path, &export).unwrap();
+    std::fs::write(&receipts_path, serde_json::to_vec(&[&receipt]).unwrap()).unwrap();
+    let args = [
+        "verify-scope-reviews",
+        "--enrollment",
+        path(&enrollment_path),
+        "--checkpoint",
+        path(&checkpoint_path),
+        "--export",
+        path(&export_path),
+        "--receipts",
+        path(&receipts_path),
+        "--broker-public-key",
+        &broker_public,
+        "--expected-checkpoint-sha256",
+        &pin,
+    ];
+    let verified = run(&args);
+    assert!(verified.status.success(), "{verified:?}");
+    let result: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["review_signatures"], "verified_historical_bindings");
+
+    let mut forged = receipt;
+    forged.response.signature = "0".repeat(128);
+    std::fs::write(&receipts_path, serde_json::to_vec(&[forged]).unwrap()).unwrap();
+    let refused = run(&args);
+    assert!(!refused.status.success(), "forged review was accepted");
+    assert_eq!(std::fs::read(&export_path).unwrap(), export);
+}
+
+#[test]
 fn scope_cli_exports_stopped_state_and_rejects_live_writer_without_mutation() {
     use opaque_bounded_work::scope_store::ScopeStore;
     use opaque_core::{evidence_checkpoint as wire, scope::AuthorityOwner};

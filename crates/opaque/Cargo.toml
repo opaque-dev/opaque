@@ -9,6 +9,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[[example]]
+name = "scope-recovery"
+test = true
+
 [dependencies]
 opaque-bounded-work = { path = "../opaque-bounded-work" }
 base64 = { workspace = true }
