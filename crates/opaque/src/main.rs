@@ -1187,196 +1187,17 @@ struct PublishEnvItem {
     error: Option<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct PublishEnvSummary {
-    repo: String,
-    environment: Option<String>,
-    env_file: String,
-    value_ref_template: String,
-    dry_run: bool,
-    total_discovered: usize,
+#[derive(Debug, Default, serde::Serialize)]
+struct PublishResult {
     attempted: usize,
     published: usize,
     failed: usize,
     items: Vec<PublishEnvItem>,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct BuildManifestSummary {
-    manifest_file: String,
-    env_file: String,
-    repo: Option<String>,
-    environment: Option<String>,
-    value_ref_template: String,
-    entries: usize,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct PublishManifestSummary {
-    repo: String,
-    environment: Option<String>,
-    manifest_file: String,
-    dry_run: bool,
-    total_entries: usize,
-    attempted: usize,
-    published: usize,
-    failed: usize,
-    items: Vec<PublishEnvItem>,
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_github_publish_env(
-    sock: &Path,
-    repo: &str,
-    env_file: &Path,
-    value_ref_template: &str,
-    github_token_ref: Option<&str>,
-    environment: Option<&str>,
-    dry_run: bool,
-    continue_on_error: bool,
-    json_output: bool,
-) -> Result<(), String> {
-    let env_names = parse_env_names_from_file(env_file)?;
-    if env_names.is_empty() {
-        return Err(format!(
-            "no env keys found in {} (expected KEY=VALUE lines)",
-            env_file.display()
-        ));
-    }
-
-    let total_discovered = env_names.len();
-    let mut items = Vec::with_capacity(total_discovered);
-    let mut attempted = 0usize;
-    let mut published = 0usize;
-    let mut failed = 0usize;
-
-    for name in env_names {
-        let value_ref = match render_value_ref(value_ref_template, &name) {
-            Ok(v) => v,
-            Err(e) => {
-                failed += 1;
-                items.push(PublishEnvItem {
-                    secret_name: name.clone(),
-                    value_ref: value_ref_template.replace("{name}", &name),
-                    status: "failed".into(),
-                    error: Some(e),
-                });
-                if !continue_on_error {
-                    break;
-                }
-                continue;
-            }
-        };
-
-        if dry_run {
-            items.push(PublishEnvItem {
-                secret_name: name,
-                value_ref,
-                status: "planned".into(),
-                error: None,
-            });
-            continue;
-        }
-
-        attempted += 1;
-        let scope = if environment.is_some() {
-            "env_actions"
-        } else {
-            "repo_actions"
-        };
-        let mut params = serde_json::json!({
-            "scope": scope,
-            "repo": repo,
-            "secret_name": name,
-            "value_ref": value_ref,
-        });
-        if let Some(tok) = github_token_ref {
-            params["github_token_ref"] = serde_json::Value::String(tok.to_owned());
-        }
-        if let Some(env) = environment {
-            params["environment"] = serde_json::Value::String(env.to_owned());
-        }
-
-        match call(sock, "github", params).await {
-            Ok(resp) => {
-                if let Some(err) = resp.error {
-                    failed += 1;
-                    let error_msg = if err.code.is_empty() {
-                        err.message
-                    } else {
-                        format!("{}: {}", err.code, err.message)
-                    };
-                    items.push(PublishEnvItem {
-                        secret_name: name,
-                        value_ref,
-                        status: "failed".into(),
-                        error: Some(error_msg),
-                    });
-                    if !continue_on_error {
-                        break;
-                    }
-                } else {
-                    published += 1;
-                    let status = resp
-                        .result
-                        .as_ref()
-                        .and_then(|r| r.get("status"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("ok");
-                    items.push(PublishEnvItem {
-                        secret_name: name,
-                        value_ref,
-                        status: status.to_owned(),
-                        error: None,
-                    });
-                }
-            }
-            Err(e) => {
-                failed += 1;
-                items.push(PublishEnvItem {
-                    secret_name: name,
-                    value_ref,
-                    status: "failed".into(),
-                    error: Some(e.to_string()),
-                });
-                if !continue_on_error {
-                    break;
-                }
-            }
-        }
-    }
-
-    let summary = PublishEnvSummary {
-        repo: repo.to_owned(),
-        environment: environment.map(|s| s.to_owned()),
-        env_file: env_file.display().to_string(),
-        value_ref_template: value_ref_template.to_owned(),
-        dry_run,
-        total_discovered,
-        attempted,
-        published,
-        failed,
-        items,
-    };
-
-    if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&summary).map_err(|e| format!("json error: {e}"))?
-        );
-    } else {
-        ui::header("Publish Env Secrets");
-        ui::kv("repo", &summary.repo);
-        if let Some(ref env) = summary.environment {
-            ui::kv("environment", env);
-        }
-        ui::kv("env_file", &summary.env_file);
-        ui::kv("value_ref_template", &summary.value_ref_template);
-        if summary.dry_run {
-            ui::kv("mode", "dry-run");
-        }
-
-        for item in &summary.items {
+impl PublishResult {
+    fn render(&self, dry_run: bool) {
+        for item in &self.items {
             if let Some(ref err) = item.error {
                 println!(
                     "  {} {}",
@@ -1402,29 +1223,228 @@ async fn run_github_publish_env(
                 );
             }
         }
-
-        if summary.dry_run {
+        if dry_run {
             ui::success(&format!(
                 "Dry run complete: {} secret(s) planned",
-                summary.items.len()
+                self.items.len()
             ));
-        } else if summary.failed == 0 {
-            ui::success(&format!("Published {} secret(s)", summary.published));
+        } else if self.failed == 0 {
+            ui::success(&format!("Published {} secret(s)", self.published));
         } else {
             ui::warn(&format!(
                 "Published {} secret(s), {} failed",
-                summary.published, summary.failed
+                self.published, self.failed
             ));
         }
     }
 
-    if !dry_run && failed > 0 {
+    fn ensure_success(&self, dry_run: bool) -> Result<(), String> {
+        if !dry_run && self.failed > 0 {
+            return Err(format!(
+                "publish failed: {} succeeded, {} failed",
+                self.published, self.failed
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PublishEnvSummary {
+    repo: String,
+    environment: Option<String>,
+    env_file: String,
+    value_ref_template: String,
+    dry_run: bool,
+    total_discovered: usize,
+    #[serde(flatten)]
+    result: PublishResult,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct BuildManifestSummary {
+    manifest_file: String,
+    env_file: String,
+    repo: Option<String>,
+    environment: Option<String>,
+    value_ref_template: String,
+    entries: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PublishManifestSummary {
+    repo: String,
+    environment: Option<String>,
+    manifest_file: String,
+    dry_run: bool,
+    total_entries: usize,
+    #[serde(flatten)]
+    result: PublishResult,
+}
+
+struct GithubPublishOptions<'a> {
+    sock: &'a Path,
+    repo: &'a str,
+    github_token_ref: Option<&'a str>,
+    environment: Option<&'a str>,
+    dry_run: bool,
+    continue_on_error: bool,
+}
+
+async fn run_github_publish(
+    options: GithubPublishOptions<'_>,
+    entries: impl IntoIterator<Item = Result<EnvManifestEntry, PublishEnvItem>>,
+) -> PublishResult {
+    let mut result = PublishResult::default();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(item) => {
+                result.failed += 1;
+                result.items.push(item);
+                if !options.continue_on_error {
+                    break;
+                }
+                continue;
+            }
+        };
+        let mut item = PublishEnvItem {
+            secret_name: entry.secret_name,
+            value_ref: entry.value_ref,
+            status: "planned".into(),
+            error: None,
+        };
+        if options.dry_run {
+            result.items.push(item);
+            continue;
+        }
+        result.attempted += 1;
+        let scope = if options.environment.is_some() {
+            "env_actions"
+        } else {
+            "repo_actions"
+        };
+        let mut params = serde_json::json!({
+            "scope": scope,
+            "repo": options.repo,
+            "secret_name": item.secret_name,
+            "value_ref": item.value_ref,
+        });
+        if let Some(tok) = options.github_token_ref {
+            params["github_token_ref"] = serde_json::Value::String(tok.to_owned());
+        }
+        if let Some(env) = options.environment {
+            params["environment"] = serde_json::Value::String(env.to_owned());
+        }
+        match call(options.sock, "github", params).await {
+            Ok(resp) => {
+                if let Some(err) = resp.error {
+                    item.error = Some(if err.code.is_empty() {
+                        err.message
+                    } else {
+                        format!("{}: {}", err.code, err.message)
+                    });
+                } else {
+                    result.published += 1;
+                    item.status = resp
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get("status"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("ok")
+                        .to_owned();
+                }
+            }
+            Err(e) => item.error = Some(e.to_string()),
+        }
+        let failed = item.error.is_some();
+        if failed {
+            result.failed += 1;
+            item.status = "failed".into();
+        }
+        result.items.push(item);
+        if failed && !options.continue_on_error {
+            break;
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_github_publish_env(
+    sock: &Path,
+    repo: &str,
+    env_file: &Path,
+    value_ref_template: &str,
+    github_token_ref: Option<&str>,
+    environment: Option<&str>,
+    dry_run: bool,
+    continue_on_error: bool,
+    json_output: bool,
+) -> Result<(), String> {
+    let env_names = parse_env_names_from_file(env_file)?;
+    if env_names.is_empty() {
         return Err(format!(
-            "publish failed: {} succeeded, {} failed",
-            published, failed
+            "no env keys found in {} (expected KEY=VALUE lines)",
+            env_file.display()
         ));
     }
-    Ok(())
+    let total_discovered = env_names.len();
+    let entries =
+        env_names
+            .into_iter()
+            .map(|name| match render_value_ref(value_ref_template, &name) {
+                Ok(value_ref) => Ok(EnvManifestEntry {
+                    secret_name: name,
+                    value_ref,
+                }),
+                Err(e) => Err(PublishEnvItem {
+                    value_ref: value_ref_template.replace("{name}", &name),
+                    secret_name: name,
+                    status: "failed".into(),
+                    error: Some(e),
+                }),
+            });
+    let result = run_github_publish(
+        GithubPublishOptions {
+            sock,
+            repo,
+            github_token_ref,
+            environment,
+            dry_run,
+            continue_on_error,
+        },
+        entries,
+    )
+    .await;
+    let summary = PublishEnvSummary {
+        repo: repo.to_owned(),
+        environment: environment.map(str::to_owned),
+        env_file: env_file.display().to_string(),
+        value_ref_template: value_ref_template.to_owned(),
+        dry_run,
+        total_discovered,
+        result,
+    };
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary).map_err(|e| format!("json error: {e}"))?
+        );
+    } else {
+        ui::header("Publish Env Secrets");
+        ui::kv("repo", &summary.repo);
+        if let Some(ref env) = summary.environment {
+            ui::kv("environment", env);
+        }
+        ui::kv("env_file", &summary.env_file);
+        ui::kv("value_ref_template", &summary.value_ref_template);
+        if dry_run {
+            ui::kv("mode", "dry-run");
+        }
+        summary.result.render(dry_run);
+    }
+    summary.result.ensure_success(dry_run)
 }
 
 fn run_github_build_manifest(
@@ -1520,114 +1540,36 @@ async fn run_github_publish_manifest(
     let manifest: EnvManifest = serde_json::from_str(&raw)
         .map_err(|e| format!("invalid manifest {}: {e}", manifest_file.display()))?;
     validate_env_manifest(&manifest)?;
-
     let repo = repo_override
-        .map(|s| s.to_owned())
-        .or(manifest.repo.clone())
+        .map(str::to_owned)
+        .or(manifest.repo)
         .ok_or_else(|| {
             "missing repo: pass --repo or set manifest.repo in build-manifest".to_string()
         })?;
     let environment = environment_override
-        .map(|s| s.to_owned())
-        .or(manifest.environment.clone());
+        .map(str::to_owned)
+        .or(manifest.environment);
     let total_entries = manifest.entries.len();
-
-    let mut items = Vec::with_capacity(manifest.entries.len());
-    let mut attempted = 0usize;
-    let mut published = 0usize;
-    let mut failed = 0usize;
-
-    for entry in manifest.entries {
-        if dry_run {
-            items.push(PublishEnvItem {
-                secret_name: entry.secret_name,
-                value_ref: entry.value_ref,
-                status: "planned".into(),
-                error: None,
-            });
-            continue;
-        }
-
-        attempted += 1;
-        let scope = if environment.is_some() {
-            "env_actions"
-        } else {
-            "repo_actions"
-        };
-        let mut params = serde_json::json!({
-            "scope": scope,
-            "repo": repo,
-            "secret_name": entry.secret_name,
-            "value_ref": entry.value_ref,
-        });
-        if let Some(tok) = github_token_ref {
-            params["github_token_ref"] = serde_json::Value::String(tok.to_owned());
-        }
-        if let Some(ref env) = environment {
-            params["environment"] = serde_json::Value::String(env.to_owned());
-        }
-
-        match call(sock, "github", params).await {
-            Ok(resp) => {
-                if let Some(err) = resp.error {
-                    failed += 1;
-                    let error_msg = if err.code.is_empty() {
-                        err.message
-                    } else {
-                        format!("{}: {}", err.code, err.message)
-                    };
-                    items.push(PublishEnvItem {
-                        secret_name: entry.secret_name,
-                        value_ref: entry.value_ref,
-                        status: "failed".into(),
-                        error: Some(error_msg),
-                    });
-                    if !continue_on_error {
-                        break;
-                    }
-                } else {
-                    published += 1;
-                    let status = resp
-                        .result
-                        .as_ref()
-                        .and_then(|r| r.get("status"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("ok");
-                    items.push(PublishEnvItem {
-                        secret_name: entry.secret_name,
-                        value_ref: entry.value_ref,
-                        status: status.to_owned(),
-                        error: None,
-                    });
-                }
-            }
-            Err(e) => {
-                failed += 1;
-                items.push(PublishEnvItem {
-                    secret_name: entry.secret_name,
-                    value_ref: entry.value_ref,
-                    status: "failed".into(),
-                    error: Some(e.to_string()),
-                });
-                if !continue_on_error {
-                    break;
-                }
-            }
-        }
-    }
-
+    let result = run_github_publish(
+        GithubPublishOptions {
+            sock,
+            repo: &repo,
+            github_token_ref,
+            environment: environment.as_deref(),
+            dry_run,
+            continue_on_error,
+        },
+        manifest.entries.into_iter().map(Ok),
+    )
+    .await;
     let summary = PublishManifestSummary {
         repo,
         environment,
         manifest_file: manifest_file.display().to_string(),
         dry_run,
         total_entries,
-        attempted,
-        published,
-        failed,
-        items,
+        result,
     };
-
     if json_output {
         println!(
             "{}",
@@ -1640,59 +1582,12 @@ async fn run_github_publish_manifest(
             ui::kv("environment", env);
         }
         ui::kv("manifest_file", &summary.manifest_file);
-        if summary.dry_run {
+        if dry_run {
             ui::kv("mode", "dry-run");
         }
-
-        for item in &summary.items {
-            if let Some(ref err) = item.error {
-                println!(
-                    "  {} {}",
-                    style(ui::CROSS).red(),
-                    style(&item.secret_name).red().bold()
-                );
-                println!(
-                    "      {} {}",
-                    style("ref:").dim(),
-                    style(&item.value_ref).dim()
-                );
-                println!("      {} {}", style("error:").dim(), style(err).red());
-            } else {
-                println!(
-                    "  {} {}",
-                    style(ui::CHECK).green(),
-                    style(&item.secret_name).yellow().bold()
-                );
-                println!(
-                    "      {} {}",
-                    style("ref:").dim(),
-                    style(&item.value_ref).dim()
-                );
-            }
-        }
-
-        if summary.dry_run {
-            ui::success(&format!(
-                "Dry run complete: {} secret(s) planned",
-                summary.items.len()
-            ));
-        } else if summary.failed == 0 {
-            ui::success(&format!("Published {} secret(s)", summary.published));
-        } else {
-            ui::warn(&format!(
-                "Published {} secret(s), {} failed",
-                summary.published, summary.failed
-            ));
-        }
+        summary.result.render(dry_run);
     }
-
-    if !dry_run && summary.failed > 0 {
-        return Err(format!(
-            "publish failed: {} succeeded, {} failed",
-            summary.published, summary.failed
-        ));
-    }
-    Ok(())
+    summary.result.ensure_success(dry_run)
 }
 
 /// Flatten role arguments: accepts space-separated args and/or

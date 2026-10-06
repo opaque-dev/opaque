@@ -14,7 +14,7 @@ Start with one operation, then inspect the boundary before widening access.
 - **Access:** [policy](policy.md), [identity](identity.md), [deployment](deployment.md).
 - **Work:** [operations](operations.md), [bounded tasks](bounded-work.md), [MCP](mcp-integration.md), [tool qualification](mcp-qualified-tools.md).
 - **Review:** [workstation approval](remote-approvals.md), [Linux polkit](linux-polkit.md), [mobile approval status](mobile-approvals.md).
-- **Evidence:** [checkpoints](evidence-checkpoints.md), [audit analytics](audit-analytics.md), [storage](storage.md).
+- **Evidence:** [checkpoints](evidence-checkpoints.md), [audit inspection](audit-analytics.md), [storage](storage.md).
 - **Integrations:** [Bitwarden](bitwarden.md), [Vault](vault.md), [LLM harness](llm-harness.md).
 - **Extensions:** [dashboard](web-dashboard.md), [federation](federation.md), [public libraries](reusable-core.md), [organization architecture](enterprise-architecture.md).
 

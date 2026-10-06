@@ -1,13 +1,13 @@
 # Verifying a release
 
-Every tagged release publishes four kinds of evidence alongside each
-platform tarball: a checksum, a Sigstore signature, a signed SBOM, and (from
-the release that first includes the workflow change described in this
-document) a SLSA build provenance attestation and an embedded dependency
-manifest inside each binary. None of these replace reading the source or
-running your own review; they let you confirm that the bytes you downloaded
-are the bytes GitHub Actions produced from a specific, inspectable commit,
-built by the workflow in this repository rather than by an unknown party.
+Tagged releases publish platform archives with checksums, Sigstore signatures
+and signed SBOMs. The unreleased workflow also embeds dependency manifests in
+each Rust binary and checks their presence after packaging. This does not change
+previously published archives. SLSA provenance attestation remains proposed and
+is not wired into the current release workflow.
+
+These checks identify the downloaded bytes, the signing workflow and linked
+Rust dependencies. They do not replace source review or deployment qualification.
 
 Commands below use `opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz` as the
 example artifact. Substitute the file for the platform and version you
@@ -66,11 +66,9 @@ next section adds. Confirm current flag names with `cosign verify-blob
 
 ## 3. SLSA build provenance
 
-*Starting with the release that first ships this step; check the release
-notes or simply try the command below if you are unsure whether your
-version predates it.*
+*Proposed; the current release workflow does not emit this attestation.*
 
-`release.yml` attests each release tarball with
+A future release workflow could attest each release tarball with
 [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance),
 which records the source repository, commit, and workflow run that produced
 it as a signed, transparency-logged statement. The GitHub CLI verifies this
@@ -92,7 +90,7 @@ attestation verify --help`.
 
 ## 4. Embedded dependency manifest
 
-*Also starting with the release that first ships this step.*
+*Wired in unreleased source. Use release notes to confirm availability for a tagged archive.*
 
 Each release binary (`opaqued`, `opaque`, `opaque-mcp`,
 `opaque-approve-helper`, `opaque-approver`, `opaque-web`, and the two
@@ -113,9 +111,14 @@ cargo audit bin opaque
 
 This reports the full dependency list `cargo-audit` extracted from the
 binary and cross-references it against the RustSec advisory database,
-independent of whatever CI produced the binary; release CI runs the same
-check as a build gate (`scripts/verify_auditable_binary.py`) so a binary
-missing this data never ships. A clean `cargo audit bin` result reports the
+independent of whatever CI produced the binary. The unreleased release gate
+(`scripts/verify_auditable_binary.py`) uses bounded, offline
+[`rust-audit-info`](https://github.com/rust-secure-code/cargo-auditable/tree/master/rust-audit-info)
+extraction on all eight standalone Rust binaries and both Rust copies in the
+macOS reviewer app after signing and notarization. It rejects missing data;
+it does not consult an advisory database. `cargo audit bin` can also guess
+partial dependencies in binaries without embedded data, so a parseable audit
+report alone does not prove a complete embedded manifest exists. A clean `cargo audit bin` result reports the
 dependency list with no forced network fetch of the binary's own build
 inputs: everything it verifies came from the binary you already downloaded
 and checksummed above.
@@ -128,13 +131,13 @@ Each layer answers a different question:
 |---|---|
 | Checksum | Did the download arrive intact? |
 | Cosign signature | Did this exact repository's release workflow produce this exact file? |
-| SLSA provenance | Which commit, and which workflow run, built this file? |
+| SLSA provenance (proposed) | Which commit, and which workflow run, built this file? |
 | `cargo audit bin` | What did that build actually link in, and is any of it known-vulnerable? |
 
 None of the four is a substitute for the others: a matching checksum says
 nothing about authorship, a valid signature says nothing about which source
 commit was built, and a clean dependency audit says nothing about whether
-the archive you have was tampered with after signing. Run them together for
+the archive you have was tampered with after signing. Run the available checks together for
 a release you are about to deploy, especially into an environment where
 `trust_domain.enforce = true` ([hardening guide](hardening.md)) makes the
 binary itself part of the trust boundary.

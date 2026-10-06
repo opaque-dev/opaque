@@ -1,14 +1,52 @@
-# Audit Log, Live Feed, and Analytics
+# Inspect audit evidence
 
-You want three things simultaneously:
+Read recent events and verify the local chain from a reviewed source checkout:
 
-1. **Audit**: a keyed, tamper-evident record of instrumented requests, approvals and operations, with explicit retention boundaries.
-2. **Live feed**: a real-time stream for UI/monitoring (pending approvals, durations, outcomes).
-3. **Analytics + semantic search**: fast queries and “find similar events” without leaking secret material.
+```sh
+cargo build --locked -p opaque --bins
+OPAQUE="${CARGO_TARGET_DIR:-target}/debug/opaque"
+"$OPAQUE" audit tail --limit 50
+"$OPAQUE" audit tail --query github --since 1h
+"$OPAQUE" audit verify
+```
 
-This document combines the current audit contract below with proposed analytics architecture. Arrow/Parquet, LanceDB, location fields, and an internal broadcast feed described later are design proposals, not supported runtime capabilities.
+These commands read the configured local audit database; session mode defaults to
+`~/.opaque/audit.db`. Event metadata can contain repository names, secret references
+and human identities. Keep the database and exports under their custody controls.
+The durability contract below describes current source; check installed release
+availability before applying its [offline upgrade procedure](evidence-checkpoints.md#authenticated-local-head-and-older-databases).
 
-## Current durability and retention contract
+## Choose the inspection boundary
+
+`audit tail` filters recorded events by kind, operation, time, request ID, outcome
+or full-text query. Request IDs correlate records; they do not authorize retries.
+The [local dashboard](web-dashboard.md) reads broker audit state. The
+[SIEM export pump and detector](federation.md#audit-export-to-siem) maintain their
+own cursors and report observed lifecycle contradictions and delivery gaps.
+Findings describe the records seen by the detector, not independently witnessed
+provider effects.
+
+For an independently obtained `opaque.audit.v1` SIEM JSONL file, the source-only
+structural verifier handles bounded input and exact duplicate deliveries:
+
+```sh
+python3 -B scripts/verify_audit_evidence.py verify /received/audit.jsonl
+```
+
+It reports structural validity, duplicates and observed gaps. It does not
+verify the audit HMAC or producer identity. Its optional externally pinned
+unsigned checkpoint compares one exact file to a separately held digest; it
+cannot authenticate a producer or establish global completeness.
+
+For portable custody, use [signed evidence checkpoints](evidence-checkpoints.md).
+`opaque-evidence create` signs an authenticated database snapshot under a dedicated
+producer key. `verify` requires separately enrolled producer trust;
+`verify-receipt` additionally checks an independently enrolled custodian signature
+and retention interval. Receiving an enrollment or digest beside the same package
+does not establish its provenance. A replaying SIEM spool is not interchangeable
+with the exact snapshot named by a signed checkpoint.
+
+## Durability and retention
 
 The daemon records audit events in SQLite with a keyed hash chain. Startup and retention verify existing history before maintenance; corruption stops startup rather than being signed again. Retention removes only an expired insertion-order prefix and authenticates its boundary without changing surviving record hashes. A clock regression can therefore keep an old-timestamp event beyond the retention period until the preceding live events expire. Export cursors remain monotonic even after the table is fully pruned.
 
@@ -27,217 +65,13 @@ their digest cannot bind the historical sequence frontier. Preserve consumed aut
 revocation history separately: audit exports neither reconstruct grants nor prove
 whether an external effect completed.
 
-## 1. Proposed storage strategy
-
-### Audit system of record: SQLite (transactional)
-
-The current audit implementation stores events, retention boundaries and its
-authenticated head transactionally in SQLite. Other custody and authority stores
-keep their existing formats and recovery contracts; this proposal does not migrate
-device pairings, identities, profiles or provider configuration into the audit
-database. Arrow/Parquet and semantic indexing below are proposed derived views.
-
-### Analytics store: Arrow/Parquet dataset
-
-- Periodically (or continuously) export/roll up audit events to Parquet files with a stable Arrow schema.
-- This enables:
-  - DuckDB queries
-  - DataFusion queries
-  - Python/R/BI tooling
-
-Parquet is an Arrow-friendly, columnar, compressible format for long-term history.
-
-### Semantic index: LanceDB (Arrow-native)
-
-- Build an embeddings index over **sanitized** event text (no secret values, no raw locators).
-- Store:
-  - `event_id`
-  - `ts`
-  - `event_text` (sanitized)
-  - `embedding` vector
-
-LanceDB is a good fit specifically because it is Arrow-native and optimized for vector search.
-
-## 2. Redaction Policy (Critical)
-
-Audit/feeds become an exfiltration path if they contain sensitive data and are accessible to untrusted agent runtimes.
-
-Rules:
-
-- Never log plaintext secrets.
-- Prefer not to log full secret locators (e.g., full Vault paths or 1Password item names) in LLM-visible channels.
-- Treat these as sensitive metadata:
-  - secret ref locators
-  - repository names (sometimes)
-  - cluster names/namespaces (sometimes)
-  - exact URLs and response bodies from authenticated HTTP proxy ops
-
-Recommended split:
-
-- **Human audit stream**: richer detail (still no values).
-- **Agent audit stream**: heavily minimized (operation name + high-level target category + outcome).
-
-Enforce this by separating:
-
-- transport (separate sockets/endpoints) and/or
-- authorization (role gating per client identity).
-
-## 3. Event Model
-
-### Event taxonomy (suggested)
-
-- `request.received`
-- `policy.denied`
-- `approval.required`
-- `approval.presented`
-- `approval.granted`
-- `approval.denied`
-- `operation.started`
-- `operation.succeeded`
-- `operation.failed`
-- `provider.fetch.started` / `provider.fetch.finished` (metadata only)
-
-### Correlation IDs
-
-Every operation should carry a correlation chain:
-
-- `request_id`: correlation identifier generated for a request; provider idempotency requires a separate explicit contract
-- `approval_id`: approval request id (may be multiple if step-up)
-- `event_id`: unique per event
-
-### Minimal event fields (conceptual)
-
-```rust
-struct AuditEvent {
-  event_id: String,           // uuid
-  ts_utc_ms: i64,
-  level: String,              // info|warn|error
-  kind: String,               // request.received, approval.granted, ...
-  request_id: Option<String>,
-  approval_id: Option<String>,
-
-  client: ClientSummary,      // observed uid/gid + exe hash + optional codesign
-  operation: Option<String>,  // github.set_actions_secret, k8s.set_secret, ...
-  target: Option<TargetSummary>,
-
-  outcome: Option<String>,    // ok|denied|error
-  latency_ms: Option<i64>,    // approval latency, op latency, etc
-
-  // Optional and sensitive: store only when explicitly enabled.
-  location: Option<Location>,
-
-  // No secret values.
-  // Avoid full locators by default; use stable ids or hashed references.
-  secret_names: Vec<String>,  // e.g. ["JWT","DATABASE_URL"]
-  secret_ref_ids: Vec<String> // e.g. hashed refs or profile keys
-}
-```
-
-### Location (optional, privacy-sensitive)
-
-Location can mean multiple things:
-
-- iOS approval device location (requires explicit permission)
-- network info (LAN IP, WiFi SSID) is often *more sensitive* than helpful
-
-Recommendation:
-
-- default: `location = None`
-- opt-in: store coarse location only:
-  - country/region if available, or
-  - geohash with low precision, or
-  - just “network = home/office” tags from user config
-
-## 4. Live Feed
-
-### Feed requirements
-
-- near-real-time UI updates:
-  - new requests
-  - pending approvals
-  - granted/denied
-  - operation outcomes
-- filtering:
-  - by repo/project/cluster
-  - by operation kind
-  - by client identity
-
-### Implementation shape
-
-Internally:
-
-- append each event to SQLite
-- publish each event to an in-memory pubsub (e.g. `tokio::broadcast`)
-
-Externally (pick one or more):
-
-- UDS stream for local UI/CLI tail (`opaque tail --follow`)
-- HTTP `localhost` endpoint using SSE for a web/desktop UI
-- (later) Arrow Flight / FlightSQL stream for Arrow-native consumers
-
-### Preventing side channels
-
-Make sure untrusted agent clients cannot subscribe to the human feed by default.
-
-## 5. Analytics
-
-### Built-in metrics (daemon can compute)
-
-- approvals:
-  - count granted/denied
-  - median approval latency
-  - step-up frequency (local_bio only vs local_bio+ios_faceid)
-- operations:
-  - success/error rates by operation
-  - p95 latency by operation kind
-  - top targets (repo/project/cluster)
-
-### Columnar analytics with Arrow/Parquet + DuckDB
-
-For long-term analysis:
-
-- export audit events to Parquet partitions:
-  - partition by date (`dt=YYYY-MM-DD`)
-  - optionally partition by `operation_family`
-
-DuckDB can query these locally with high performance, including joins, group-bys, and window functions.
-
-## 6. Semantic Search
-
-### What to embed
-
-Only embed a **sanitized** textual summary, e.g.:
-
-- `"approval denied for github.set_actions_secret repo=org/repo env=prod secret=JWT client=claude-code"`
-
-Never embed:
-
-- secret values
-- access tokens
-- raw HTTP bodies
-- full secret ref locators if you consider them sensitive
-
-### Indexing pipeline
-
-- emit `AuditEvent`
-- derive `event_text_sanitized`
-- compute embedding asynchronously (so approvals/operations are not blocked)
-- upsert into LanceDB with `event_id` as primary key
-
-### Queries
-
-- `audit.search_semantic(query, limit)` returns:
-  - event_ids + similarity scores + short snippet
-- then fetch details from SQLite (role-gated and redacted appropriately)
-
-## 7. Retention and Backpressure
-
-Audit can grow without bound.
-
-Recommended:
-
-- SQLite retains recent window (e.g. 30-90 days)
-- daemon retention cleanup removes only an authenticated expired insertion-order prefix; it does not delete every row with an old timestamp
-- older events can later be rolled to Parquet when that pipeline is enabled
-- embeddings store follows the same retention window
-- live feed uses bounded channels (drop-oldest or apply backpressure)
+## Earlier unsigned report bundles
+
+The source cleanup after v0.6.0 retires `evidence_package.py`, `approval_metrics.py`
+and `audit_anomalies.py`, including their descriptive review signals and unsigned
+control-report bundle. Their report formats are not signed checkpoint formats.
+Preserve existing exports and independent reference hashes when investigating
+historical bundles; the structural verifier can inspect their `audit.jsonl`.
+For new custody evidence, follow the producer enrollment and authenticated snapshot
+workflow above. Attaching a new signature or locally calculated hash to an old
+bundle cannot establish its historical authenticity.

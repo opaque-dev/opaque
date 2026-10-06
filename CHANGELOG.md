@@ -11,6 +11,16 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ### Fixed
 
+- The unreleased release workflow embeds Rust dependency manifests and checks
+  them by direct, bounded extraction after packaging. It removes the redundant
+  second strip pass. Existing tagged archives and SLSA availability are unchanged.
+
+- `github publish-env` and `github publish-manifest` share one implementation;
+  their arguments, result fields, dry runs and partial-failure behavior remain
+  supported. Source-only unsigned analytics and evidence-report bundles are
+  retired. The independent SIEM JSONL structural verifier remains supported;
+  signed producer and retention evidence uses `opaque-evidence`.
+
 - A scoped `github.workflow.dispatch` that GitHub accepted is recorded as
   `api_accepted` again. The broker pins REST API version `2026-03-10`, under
   which GitHub answers a dispatch with `200` and the new run's id instead of

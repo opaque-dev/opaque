@@ -28,7 +28,7 @@ type HmacSha256 = Hmac<Sha256>;
 // Audit event kind
 // ---------------------------------------------------------------------------
 
-/// The kind of audit event. Maps to the event taxonomy in `docs/audit-analytics.md`.
+/// The kind of event recorded by the daemon's audit sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditEventKind {
@@ -456,7 +456,7 @@ impl WorkspaceSummary {
 
 /// A structured audit event.
 ///
-/// Fields align with the schema in `docs/audit-analytics.md`.
+/// See `docs/audit-analytics.md` for inspection and custody boundaries.
 /// Secret values NEVER appear here.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
