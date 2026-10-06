@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
-"""Verify that release binaries carry an embedded cargo-auditable dependency
-manifest, the same data a downstream user extracts with `cargo audit bin`.
+"""Require embedded cargo-auditable data in every final release binary.
 
-This is a provenance-presence gate, not a vulnerability gate. `cargo-deny`
-already blocks known-vulnerable dependencies from Cargo.lock earlier and
-cheaper, before an hour of cross-compiling and (on macOS) notarizing. A
-freshly disclosed advisory in some dependency must not fail a release build
-here merely because this step happens to call the same RustSec database as
-that check; only a binary with no embedded dependency data at all should.
-`cargo audit bin` reports both kinds of finding through the same nonzero
-exit code, so this script tells them apart by parsing its JSON report:
-a report that parses at all means the manifest was found and extracted,
-whatever it says about advisories; a report that does not parse means
-extraction failed, which is the one condition this gate exists to catch.
+Use direct, bounded extraction, with no advisory database or guessed dependencies.
+Vulnerability policy remains the separate cargo-deny gate. Downstream users can
+inspect the same embedded data and advisory matches with `cargo audit bin`.
 """
 import argparse
 import json
@@ -29,24 +20,26 @@ def check_binary(path):
         return False, f"{path.name}: no such file at {path}"
     try:
         result = subprocess.run(
-            ["cargo", "audit", "bin", "--json", str(path)],
+            ["rust-audit-info", str(path), str(256 * 1024 * 1024), str(8 * 1024 * 1024)],
             capture_output=True, text=True, timeout=120,
         )
     except FileNotFoundError:
-        return False, f"{path.name}: `cargo audit` is not installed (cargo install cargo-audit)"
+        return False, f"{path.name}: `rust-audit-info` is not installed (cargo install rust-audit-info)"
     except subprocess.TimeoutExpired:
-        return False, f"{path.name}: `cargo audit bin` timed out"
+        return False, f"{path.name}: dependency manifest extraction timed out"
+    if result.returncode != 0:
+        detail = (result.stderr or "extraction failed").strip()
+        return False, f"{path.name}: no embedded dependency manifest found ({detail})"
     try:
         report = json.loads(result.stdout)
     except (json.JSONDecodeError, ValueError):
         detail = (result.stderr or result.stdout or "no output").strip()
         return False, (f"{path.name}: no embedded dependency manifest found "
                         f"-- was it built with `cargo auditable build`? ({detail})")
-    vulnerabilities = report.get("vulnerabilities") or {}
-    if vulnerabilities.get("found"):
-        count = vulnerabilities.get("count", "some")
-        return True, (f"{path.name}: embedded dependency manifest present "
-                       f"({count} known advisory match(es); tracked separately by cargo-deny, not this gate)")
+    if (not isinstance(report, dict) or not isinstance(report.get("packages"), list)
+            or not report["packages"] or not all(isinstance(package, dict) for package in report["packages"])
+            or sum(package.get("root") is True for package in report["packages"]) != 1):
+        return False, f"{path.name}: invalid embedded dependency manifest"
     return True, f"{path.name}: embedded dependency manifest present"
 
 
@@ -57,6 +50,9 @@ def main():
                          help="binary name to check (repeatable); default is every release binary")
     args = parser.parse_args()
     bins = args.bins or list(release.BINS)
+    if args.bins is None and (args.binary_dir / release.APP).exists():
+        bins.extend(f"{release.APP}/Contents/MacOS/{name}"
+                    for name in ("opaque-approver", "opaque-approve-helper"))
     results = [(name, *check_binary(args.binary_dir / name)) for name in bins]
     failed = [(name, message) for name, ok, message in results if not ok]
     for name, ok, message in results:

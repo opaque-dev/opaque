@@ -1,10 +1,14 @@
-//! Exercise the independent Python verifier against the real durable sink/export.
+//! Exercise independent structural inspection and signed custody against real exports.
 //! Synthetic records only; the verifier never receives the audit HMAC key.
 use std::path::PathBuf;
 use std::process::Command;
 
+use ed25519_dalek::SigningKey;
 use opaque_core::audit::{AuditEvent, AuditEventKind, AuditSink, SqliteAuditSink};
-use opaque_federation_runtime::export::{deliver_spool, read_rows_after};
+use opaque_core::evidence_checkpoint as evidence;
+use opaque_federation_runtime::export::{
+    ApprovalDetector, Finding, deliver_spool, read_rows_after,
+};
 
 #[test]
 fn standalone_verifier_accepts_production_export_and_detects_truncated_delivery() {
@@ -79,7 +83,7 @@ fn standalone_verifier_accepts_production_export_and_detects_truncated_delivery(
 }
 
 #[test]
-fn actual_retained_export_builds_reproducible_independently_checked_package() {
+fn actual_retained_export_has_signed_custody_and_deterministic_findings() {
     let temp = tempfile::tempdir().unwrap();
     let db = temp.path().join("audit.db");
     let initial = SqliteAuditSink::new(db.clone(), 0).unwrap();
@@ -106,62 +110,45 @@ fn actual_retained_export_builds_reproducible_independently_checked_package() {
     let rows = read_rows_after(&db, 0, 100).unwrap();
     assert_eq!(rows.len(), 2);
     assert!(rows[0].sequence_number > 0);
-    let spool = temp.path().join("audit.jsonl");
-    deliver_spool(&spool, &rows).unwrap();
-    deliver_spool(&spool, &rows[..1]).unwrap();
-    let script =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/evidence_package.py");
-    let mut outputs = Vec::new();
-    for name in ["first", "second"] {
-        let directory = temp.path().join(name);
-        let result = Command::new("python3")
-            .args(["-B"])
-            .arg(&script)
-            .arg("create")
-            .arg(&spool)
-            .args(["--source-id", "synthetic-retained-broker", "--output"])
-            .arg(&directory)
-            .output()
-            .unwrap();
-        assert!(result.status.success(), "{:?}", result);
-        let created: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-        let verified = Command::new("python3")
-            .args(["-B"])
-            .arg(&script)
-            .arg("verify")
-            .arg(&directory)
-            .arg("--trusted-manifest-sha256")
-            .arg(created["manifest_sha256"].as_str().unwrap())
-            .output()
-            .unwrap();
-        assert!(verified.status.success(), "{:?}", verified);
-        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 8);
-        outputs.push(std::fs::read(directory.join("manifest.json")).unwrap());
-        let anomalies: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(directory.join("anomalies.json")).unwrap())
-                .unwrap();
-        let expected = opaque_federation_runtime::export::Finding::new(
-            "approval_missing",
-            &rows[1],
-            Some(rows[0].sequence_number),
-        );
-        assert_eq!(
-            anomalies["findings"][0],
-            serde_json::to_value(expected).unwrap()
-        );
-        assert_eq!(anomalies["input_evidence"]["duplicate_count"], 1);
-        assert_eq!(anomalies["coverage"]["global_completeness"], false);
-    }
-    assert_eq!(outputs[0], outputs[1]);
-    // An independently held pin rejects a changed package, including a valid JSON edit.
-    let metrics = temp.path().join("first/metrics.json");
-    std::fs::write(metrics, b"{}\n").unwrap();
-    let rejected = Command::new("python3")
-        .args(["-B"])
-        .arg(&script)
-        .arg("verify")
-        .arg(temp.path().join("first"))
-        .output()
-        .unwrap();
-    assert_eq!(rejected.status.code(), Some(2));
+    let mut detector = ApprovalDetector::default();
+    let findings: Vec<_> = rows
+        .iter()
+        .flat_map(|row| detector.observe_findings(row))
+        .collect();
+    let expected = Finding::new("approval_missing", &rows[1], Some(rows[0].sequence_number));
+    assert_eq!(findings, vec![expected]);
+    assert_eq!(detector.health["prefix_unobserved"], 1);
+    assert_eq!(detector.pending_count(), 0);
+
+    let key = SigningKey::from_bytes(&[17; 32]); // synthetic fixture key, never production custody
+    let trust = evidence::ProducerTrust {
+        schema_version: 1,
+        scope: evidence::Scope {
+            tenant_id: "synthetic-tenant".into(),
+            broker_id: "synthetic-broker".into(),
+            stream_id: "audit".into(),
+            generation: "fixture-1".into(),
+        },
+        key_id: evidence::key_id(&key.verifying_key()),
+        public_key: evidence::hex(key.verifying_key().as_bytes()),
+    };
+    let (checkpoint, export) =
+        evidence::create_checkpoint(&db, &trust, &key, None, "synthetic-build".into()).unwrap();
+    let (repeated, repeated_export) =
+        evidence::create_checkpoint(&db, &trust, &key, None, "synthetic-build".into()).unwrap();
+    assert_eq!(checkpoint, repeated);
+    assert_eq!(export, repeated_export);
+    assert_eq!(checkpoint.payload.record_count, 2);
+    assert_eq!(
+        checkpoint.payload.coverage_start,
+        Some(rows[0].sequence_number as u64)
+    );
+    let verified = evidence::verify_checkpoint(&checkpoint, &trust, &export).unwrap();
+    assert_eq!(verified.export_sha256, evidence::sha256(&export));
+    // The signed snapshot is one exact retained range, not the replaying SIEM spool.
+    let truncated = &export[..export.len() - 1];
+    assert!(evidence::verify_checkpoint(&checkpoint, &trust, truncated).is_err());
+    let mut forged = checkpoint;
+    forged.signature = "00".repeat(64);
+    assert!(evidence::verify_checkpoint(&forged, &trust, &export).is_err());
 }

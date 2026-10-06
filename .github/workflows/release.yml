@@ -29,6 +29,13 @@ jobs:
           python-version: "3.12"
       - run: python3 -B -m unittest discover -s scripts -p 'test_release_artifacts.py' -v
       - run: python3 -B -m unittest discover -s scripts -p 'test_install_delivery.py' -v
+      - name: Install pinned dependency-manifest tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-auditable@0.7.7
+      - run: cargo install --locked rust-audit-info --version 0.5.4
+      - name: Test real manifest extraction after stripping and native signing
+        run: python3 -B -m unittest discover -s scripts -p 'test_verify_auditable_binary.py' -v
 
   build:
     needs: qualify
@@ -76,16 +83,17 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Build release binaries
-        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Install pinned dependency-manifest tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-auditable@0.7.7
+
+      - run: cargo install --locked rust-audit-info --version 0.5.4
+
+      - name: Build release binaries with embedded dependency manifests
+        run: cargo auditable build --locked --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-
-      - name: Strip binaries
-        run: |
-          for bin in opaqued opaque opaque-mcp opaque-mcp-contract opaque-approve-helper opaque-approver opaque-evidence opaque-web; do
-            strip "target/${{ matrix.target }}/release/$bin" 2>/dev/null || true
-          done
 
       - name: Codesign macOS binaries
         if: contains(matrix.target, 'apple-darwin')
@@ -158,6 +166,9 @@ jobs:
           xcrun stapler staple "target/${{ matrix.target }}/release/Opaque Reviewer.app"
           xcrun stapler validate "target/${{ matrix.target }}/release/Opaque Reviewer.app"
           rm -f "$NOTARIZE_ZIP"
+
+      - name: Verify final Rust dependency manifests
+        run: python3 scripts/verify_auditable_binary.py --binary-dir "target/${{ matrix.target }}/release"
 
       - name: Bind complete payload to tagged source
         run: |

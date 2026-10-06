@@ -60,10 +60,9 @@ codegen-units = 1
 # Release binaries are built with `cargo auditable build` (release.yml), which
 # links an embedded dependency manifest into a `.dep-v0` section so a shipped
 # binary can be audited after the fact with `cargo audit bin`. `strip = true`
-# removes symbols at the same link step; on Linux the release workflow strips
-# again explicitly with `--keep-section=.dep-v0` to protect that section, and
-# a dedicated CI step (scripts/verify_auditable_binary.py) checks every
-# shipped binary still carries the manifest after stripping and (on macOS)
+# removes symbols at the same link step. A dedicated release gate
+# (scripts/verify_auditable_binary.py) extracts embedded data from every
+# shipped Rust binary after stripping and (on macOS)
 # codesigning, rather than assuming the interaction is safe. See
 # docs/compliance/verifying-releases.md.
 strip = true

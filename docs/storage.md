@@ -61,8 +61,8 @@ SQLite or the broker HMAC key. A retained external receipt or high-water mark is
 needed to detect replay of an older intact snapshot. A signature alone proves
 neither completeness, provider effects nor independence of the signer.
 
-[Audit analytics](audit-analytics.md) describes the supported read interfaces and
-which analytics options remain proposals.
+[Audit inspection](audit-analytics.md) explains local reads, SIEM structural checks
+and the signed custody boundary.
 
 ## Backup and recovery
 
