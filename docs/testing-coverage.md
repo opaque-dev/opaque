@@ -17,7 +17,7 @@ The packages assigned to each tier are:
   `opaque-approver`, `opaque-bounded-work`, `opaque-federation-runtime`,
   `opaque-mcp`, `opaque-native-approval`, `opaque-providers`, `opaque-sandbox`,
   `opaque-tenant`, and `opaqued`.
-- **General:** `opaque`, `opaque-web`, and `opaque-showcase`.
+- **General:** `opaque` and `opaque-web`.
 
 The small kernel owns pure policy decisions used by production. It is measured
 as its own crate; assigning a broad crate to the kernel tier would not establish

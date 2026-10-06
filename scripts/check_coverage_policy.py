@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 
 import check_llvm_coverage as llvm
 import synthesized_suite as suite
@@ -165,7 +166,39 @@ def baseline_packages(baseline, *, target, names):
     return rows
 
 
-def available_baseline(baseline, *, target, names):
+def verified_retirements(root, names, baseline):
+    """Authorize only documented whole-crate removals; retain their old floors."""
+    path = root / "config/coverage-retirements.json"
+    if not path.exists() and not path.is_symlink():
+        return set()
+    record, _ = read(path)
+    require(set(record) == {"schema", "packages"}
+            and record["schema"] == "opaque.coverage-retirements.v1"
+            and isinstance(record["packages"], dict), "invalid coverage retirement record")
+    retired = set()
+    for name, entry in record["packages"].items():
+        require(isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_-]*", name)
+                and isinstance(entry, dict) and set(entry) == {"manifest", "revision", "reason"},
+                "invalid retired package identity")
+        manifest = entry["manifest"]
+        require(manifest == f"crates/{name}/Cargo.toml" and identity(entry["revision"], 40)
+                and isinstance(entry["reason"], str) and entry["reason"].strip(),
+                "retirement requires an exact historical manifest and reason")
+        source_dir = root / "crates" / name
+        require(name not in names and not source_dir.exists() and not source_dir.is_symlink(),
+                "retired package remains in the workspace or source tree")
+        require(isinstance(baseline, dict) and name in baseline.get("packages", {}),
+                "retirement cannot exempt a package without a retained historical floor")
+        subprocess.run(["git", "merge-base", "--is-ancestor", entry["revision"], "HEAD"],
+                       cwd=root, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        original = subprocess.check_output(["git", "show", f"{entry['revision']}:{manifest}"], cwd=root)
+        require(tomllib.loads(original.decode())["package"]["name"] == name,
+                "retired source did not declare this package")
+        retired.add(name)
+    return retired
+
+
+def available_baseline(baseline, *, target, names, retired_packages=()):
     """Keep qualified same-target floors while exposing every missing/invalid row."""
     if baseline is None:
         return {}, {"status": "missing", "failures": ["baseline:missing"], "source": None}
@@ -178,7 +211,8 @@ def available_baseline(baseline, *, target, names):
         if name not in candidates:
             failures.append(f"{name}:baseline:missing")
         elif name not in names:
-            failures.append(f"{name}:baseline:removed_package")
+            if name not in retired_packages:
+                failures.append(f"{name}:baseline:removed_package")
         else:
             try:
                 metrics = candidates[name]
@@ -192,7 +226,7 @@ def available_baseline(baseline, *, target, names):
                   "source": baseline["source"]}
 
 
-def evaluate(measurement, *, policy, baseline, target, history=None):
+def evaluate(measurement, *, policy, baseline, target, history=None, retired_packages=()):
     require(measurement.get("status") == "passed" and measurement.get("failures") == [],
             "structural coverage validation failed")
     packages = measurement["workspace_packages"]
@@ -200,7 +234,9 @@ def evaluate(measurement, *, policy, baseline, target, history=None):
     require(names and len(names) == len(set(names)), "missing or duplicate workspace measurements")
     require(target in TARGETS, "unsupported native target")
     assignments = policy_packages(policy, names)
-    prior, baseline_status = available_baseline(baseline, target=target, names=names)
+    require(not set(retired_packages) & set(names), "active packages cannot be retired")
+    prior, baseline_status = available_baseline(baseline, target=target, names=names,
+                                              retired_packages=retired_packages)
     rows, failures = [], list(baseline_status["failures"])
     trusted = {}
     if history is not None:
@@ -374,7 +410,8 @@ def baseline_history(root, *, reference, target, allow_bootstrap=False):
     return history
 
 
-def baseline_from_evidence(measurement, collection, collection_hash, previous=None, policy_definition=None):
+def baseline_from_evidence(measurement, collection, collection_hash, previous=None, policy_definition=None,
+                           retired_packages=()):
     """Keep only public counters and provenance; no raw output or private paths."""
     names = [row["package"] for row in measurement["workspace_packages"]]
     result = {"schema": BASELINE_SCHEMA, "target": collection["target"], "platform": collection["platform"],
@@ -386,11 +423,17 @@ def baseline_from_evidence(measurement, collection, collection_hash, previous=No
     baseline_packages(result, target=collection["target"], names=names)
     if previous is not None:
         previous_names = set(previous.get("packages", {}))
-        require(previous_names <= set(names), "baseline refresh cannot remove an existing package")
+        require(previous_names <= set(names) | set(retired_packages),
+                "baseline refresh cannot remove an existing package")
         old = baseline_packages(previous, target=collection["target"], names=previous_names)
+        retained = previous_names - set(names)
+        for name in sorted(retained):
+            result["packages"][name] = old[name]
+            names.append(name)
         added = set(names) - previous_names
         if added:
-            assignments = policy_packages(policy_definition, names)
+            assignments = policy_packages(policy_definition,
+                                          [row["package"] for row in measurement["workspace_packages"]])
             require(all(assignments[name] == "kernel" and all(ratio(result["packages"][name][metric]) == 1
                                                               for metric in METRICS) for name in added),
                     "new baseline packages require a freshly measured complete decision kernel")
@@ -408,6 +451,11 @@ def baseline_from_evidence(measurement, collection, collection_hash, previous=No
                 for metric in METRICS:
                     require(ratio(result["packages"][name][metric]) >= ratio(old[name][metric]),
                             "baseline refresh cannot lower an existing package ratchet")
+            if retained:
+                fields = ("source", "coverage_report_sha256", "collection_sha256")
+                result["package_provenance"] = {
+                    name: previous.get("package_provenance", {}).get(name, {key: previous[key] for key in fields})
+                    if name in retained else {key: result[key] for key in fields} for name in names}
     baseline_packages(result, target=collection["target"], names=names)
     return result
 
@@ -459,7 +507,8 @@ def main(argv=None):
             require(not args.output.exists(), "baseline export requires a fresh output path")
             prior = read(args.baseline)[0] if args.baseline else None
             definition = read(args.policy)[0] if args.policy else None
-            result = baseline_from_evidence(measured, collection, collection_hash, prior, definition)
+            retired = verified_retirements(args.source_root, names, prior)
+            result = baseline_from_evidence(measured, collection, collection_hash, prior, definition, retired)
             if args.baseline:
                 result["previous_baseline_sha256"] = read(args.baseline)[1]
             if args.canonical_revision is not None:
@@ -478,7 +527,9 @@ def main(argv=None):
                     "enforcement must use the canonical native baseline path")
             history = baseline_history(args.source_root, reference=args.baseline_reference, target=args.target,
                                        allow_bootstrap=args.allow_baseline_bootstrap)
-            result = evaluate(measured, policy=policy, baseline=baseline, target=args.target, history=history)
+            retired = verified_retirements(args.source_root, names, baseline)
+            result = evaluate(measured, policy=policy, baseline=baseline, target=args.target, history=history,
+                              retired_packages=retired)
             result.update({"source": source, "collection_sha256": collection_hash, "coverage_report_sha256": report_hash,
                            "policy_sha256": policy_hash, "baseline_sha256": baseline_hash,
                            "workspace_metadata_sha256": sha(metadata_raw)})

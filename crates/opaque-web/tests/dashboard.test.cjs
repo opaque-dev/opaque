@@ -366,17 +366,17 @@ test('clearing audit invalidates pending snapshots without starting more work', 
   assert.equal(pending.length, 1);
 });
 
-test('operation inventory distinguishes configured, disabled, fixture and synthetic handlers', () => {
+test('operation inventory distinguishes configured, disabled, fixture and unknown handlers', () => {
   const ui = dashboard();
   const container = ui.el('div');
   ui.document.getElementById = () => container;
-  ui.renderOperations(['enabled', 'disabled', 'fixture_only', 'synthetic', undefined].map((availability, i) => ({
+  ui.renderOperations(['enabled', 'disabled', 'fixture_only', undefined].map((availability, i) => ({
     name: 'fixture.operation_' + i, provider: 'fixture', safety: 'Safe', mcp_exposed: true,
     default_approval: 'always', availability,
   })));
   const rendered = text(container);
   for (const label of ['Handler enabled', 'Handler disabled', 'Fixture only — no production transport',
-    'Synthetic demo example', 'Availability unavailable', 'defaults do not grant permission', 'Default approval: always']) {
+    'Availability unavailable', 'defaults do not grant permission', 'Default approval: always']) {
     assert.ok(rendered.includes(label), label);
   }
 });
@@ -687,7 +687,7 @@ test('locking while unlock JSON is pending cannot reopen the dashboard', async (
   const unlock = fixture.ui.unlockDashboard({preventDefault(){}});
   await nextTurn();
   fixture.ui.lockDashboard();
-  body.resolve({mode:'demo'});
+  body.resolve({mode:'live'});
   await unlock;
   assert.equal(fixture.ui.auth.unlocked, false);
   assert.equal(fixture.ui.authToken, '');

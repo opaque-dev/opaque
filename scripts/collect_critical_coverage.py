@@ -123,7 +123,6 @@ IGNORED_PREREQUISITES = {
     ("opaque-bounded-work", "opaque_bounded_work", "task_store::tests::task_pagination_scales"): "explicit 1k/100k receipt scalability measurement",
     ("opaque-web", "opaque_web", "sse::tests::audit_backlog_load_baseline"): "explicit long-running SSE load baseline",
     ("opaque-federation-runtime", "opaque_federation_runtime", "workload_attest::tests::live_signed_and_adhoc_child_socket_attestation"): "explicit signed/unsigned Node binaries and expected macOS Team ID",
-    ("opaque-showcase", "gateway", "bounded_demo::browser_approval_fixture"): "explicit local browser service fixture; runs up to 20 minutes",
 }
 for _name in ("onepassword::op_cli::tests::live_list_vaults", "onepassword::op_cli::tests::live_list_items",
               "onepassword::op_cli::tests::live_read_field"):

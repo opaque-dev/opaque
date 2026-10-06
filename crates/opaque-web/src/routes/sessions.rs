@@ -6,12 +6,6 @@ use serde_json::json;
 use crate::AppState;
 
 pub async fn get_sessions(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
-    if state.demo {
-        return (
-            StatusCode::OK,
-            Json(json!({ "mode": "demo", "sessions": crate::demo::demo_sessions() })),
-        );
-    }
     match state.daemon.call("agent_session_list", json!({})).await {
         Ok(resp) if resp.error.is_none() => {
             match resp.result.and_then(|r| r.get("sessions").cloned()) {

@@ -21,12 +21,6 @@ pub async fn get_audit(
     State(state): State<AppState>,
     Query(params): Query<AuditParams>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    if state.demo {
-        return (
-            StatusCode::OK,
-            Json(json!({ "mode": "demo", "events": crate::demo::demo_audit_events() })),
-        );
-    }
     let kind = match params
         .kind
         .as_deref()
@@ -69,16 +63,6 @@ pub async fn get_audit_stream(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if state.demo {
-        let stream = futures_util::stream::once(async {
-            Ok::<_, std::convert::Infallible>(
-                axum::response::sse::Event::default()
-                    .event("demo")
-                    .data(r#"{"mode":"demo"}"#),
-            )
-        });
-        return axum::response::sse::Sse::new(stream).into_response();
-    }
     let last_seq = match headers.get("last-event-id") {
         Some(value) => match value.to_str().ok().and_then(|v| v.parse::<i64>().ok()) {
             Some(value) if value >= -1 => Some(value),

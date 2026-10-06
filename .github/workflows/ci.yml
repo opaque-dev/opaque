@@ -361,13 +361,12 @@ jobs:
         with:
           node-version: "26.8.1"
       - name: Run all Node regression suites
-        # The customer demo has its own repository. All three suites here are
+        # The customer demo has its own repository. Both suites here are
         # required: fail glob expansion if any directory loses its test files.
         run: |
           shopt -s failglob
           node --test \
             deploy/cloudflare-docs-privacy/tests/*.test.mjs \
-            crates/opaque-showcase/tests/*.test.cjs \
             crates/opaque-web/tests/*.test.cjs
 
   browser-acceptance:
