@@ -73,7 +73,7 @@ CASES = {
         "ssh_planning_without_tenant_is_denied_before_provider_io",
         "task_rpc_rechecks_changed_workspace_after_source_read_without_publishing",
     ),
-    "resource_authority_e2e": ("broker_identity_is_live_for_gateway_queries_disclosures_and_logout",),
+    "resource_authority_e2e": ("broker_identity_is_live_for_external_reads_and_durable_revocation",),
     "mcp_gateway_e2e": (
         "adapter_signed_tool_daemon_effect_receipt_and_replay_survive_restart",
         "policy_denial_malformed_input_and_generic_bypass_make_no_http_calls",
