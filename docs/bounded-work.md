@@ -3,7 +3,8 @@
 Beyond one-shot operations (`opaque execute`, `opaque github set-secret`),
 Opaque can bind an agent's work to a **task**: an immutable manifest reviewed as a
 whole, with at most one attempt per action and an inspectable receipt.
-**plan → review → approve → run → inspect**.
+This task path is available from v0.6.0 on macOS and Linux; factor and provider
+qualification remain specific to the chosen family.
 
 A content hash pins the planned manifest. Planning does not grant execution
 authority: approval, current policy, requester identity, expiry and revocation
@@ -11,11 +12,11 @@ must still permit each dispatch. A changed manifest requires a new task and revi
 
 ---
 
-## The three operation families
+## Choose an operation family
 
 | Family | What it does | Action type | Enforcement |
 |---|---|---|---|
-| Repository & release work | Publish one GitHub secret, or dispatch one reviewed staging-release workflow | `PublishSecret`, `StagingRelease` | Pinned repo/workflow/branch/image digest; atomic single-use slot; provider reconciliation |
+| Repository & release work | Publish a fixed set of GitHub secrets, or dispatch one reviewed staging-release workflow | `PublishSecret`, `StagingRelease` | Pinned repo/workflow/branch/image digest; atomic single-use slot; provider reconciliation |
 | Application evidence | Run three fixed public-source completions against the tenant's configured model profile | `Inference` | Tenant binding, fixed source/prompt and model/profile hashes, bounded requested output, current-authority recheck before source disclosure |
 | Host operations | Run one fixed command against one host over a Vault-signed, short-lived SSH certificate | `SshHealth` | Exact host key + principal + command binding, session deadline, host-side revocation check |
 
@@ -148,4 +149,4 @@ fenced authority recovery remain separate responsibilities.
 - [Identity](identity.md): the delegation token an agent session presents when planning a task on a human's behalf
 - [Trusted workstation approvals](https://github.com/opaque-dev/opaque/blob/main/crates/opaque-approver/README.md): installation, enrollment and the `paired_workstation` full-manifest review flow
 - [HashiCorp Vault](vault.md): the SSH certificate signer for `SshHealth` actions
-- [Enterprise architecture](enterprise-architecture.md): tenant/IdP wiring for `Inference` actions
+- [Deployment patterns](enterprise-architecture.md): broker custody and multi-broker topology

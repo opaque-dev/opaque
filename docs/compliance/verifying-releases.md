@@ -1,29 +1,23 @@
-# Verifying a release
+# Verify a release artifact
 
-Every tagged release publishes four kinds of evidence alongside each
-platform tarball: a checksum, a Sigstore signature, a signed SBOM, and (from
-the release that first includes the workflow change described in this
-document) a SLSA build provenance attestation and an embedded dependency
-manifest inside each binary. None of these replace reading the source or
-running your own review; they let you confirm that the bytes you downloaded
-are the bytes GitHub Actions produced from a specific, inspectable commit,
-built by the workflow in this repository rather than by an unknown party.
+Download the selected platform archive, its `.sha256`, `.sig` and `.pem` files,
+and the signed SBOMs from the same [release](https://github.com/opaque-dev/opaque/releases).
+The checked-in [release workflow](https://github.com/opaque-dev/opaque/blob/main/.github/workflows/release.yml)
+builds archives, publishes checksums, and signs archives and per-binary CycloneDX
+SBOMs with cosign. Check the workflow at the selected tag before assuming a
+historical release has the same evidence.
 
-Commands below use `opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz` as the
-example artifact. Substitute the file for the platform and version you
-downloaded, and run every command from the directory holding the downloaded
-files.
+Examples below use the v0.6.0 Linux x86-64 archive. Run them in the download
+directory, substituting your exact version/platform filenames.
 
 ## 1. Checksum
 
 ```sh
-shasum -a 256 -c opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+shasum -a 256 -c opaque-0.6.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-This only proves the download was not corrupted or truncated in transit. A
-checksum published next to the file it checks proves nothing about who
-produced the file; treat a checksum mismatch as a hard stop, and treat a
-match as step one, not as verification on its own.
+A match checks file integrity against the published digest. It does not identify
+the producer. Stop on a mismatch.
 
 ## 2. Sigstore signature (tarball and SBOM)
 
@@ -33,11 +27,11 @@ than a long-lived private key. Verify the tarball:
 
 ```sh
 cosign verify-blob \
-  --certificate opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz.pem \
-  --signature   opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz.sig \
+  --certificate opaque-0.6.0-x86_64-unknown-linux-gnu.tar.gz.pem \
+  --signature   opaque-0.6.0-x86_64-unknown-linux-gnu.tar.gz.sig \
   --certificate-identity-regexp 'https://github\.com/(kcirtapfromspace|opaque-dev)/opaque/\.github/workflows/release\.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz
+  opaque-0.6.0-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 Releases up to and including v0.4.0 were signed before the repository moved
@@ -50,91 +44,33 @@ pair:
 
 ```sh
 cosign verify-blob \
-  --certificate opaque-0.3.0-opaque.cdx.json.pem \
-  --signature   opaque-0.3.0-opaque.cdx.json.sig \
+  --certificate opaque-0.6.0-opaque.cdx.json.pem \
+  --signature   opaque-0.6.0-opaque.cdx.json.sig \
   --certificate-identity-regexp 'https://github\.com/(kcirtapfromspace|opaque-dev)/opaque/\.github/workflows/release\.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  opaque-0.3.0-opaque.cdx.json
+  opaque-0.6.0-opaque.cdx.json
 ```
 
-`cosign` prints `Verified OK` and echoes the certificate's transparency-log
-entry on success. This proves the file matches exactly what a run of the
-named workflow, in this repository, signed at build time; it does not by
-itself prove which commit or which inputs that run used, which is what the
-next section adds. Confirm current flag names with `cosign verify-blob
---help` if a `cosign` upgrade changes them.
+A valid signature binds the bytes to the accepted workflow identity. Inspect the
+certificate identity and expected release tag; it does not establish safe code
+or complete build-input provenance. See the
+[Sigstore verification reference](https://docs.sigstore.dev/cosign/verifying/verify/)
+for certificate/signature and bundle formats.
 
-## 3. SLSA build provenance
+## Evidence not supplied by the current workflow
 
-*Starting with the release that first ships this step; check the release
-notes or simply try the command below if you are unsure whether your
-version predates it.*
+The checked-in workflow uses `cargo build`, not `cargo auditable build`, and has
+no `actions/attest-build-provenance` step. Helper scripts and proposed procedures
+do not establish an embedded dependency manifest or SLSA provenance for an
+existing binary. Do not treat absent evidence as successful verification.
 
-`release.yml` attests each release tarball with
-[`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance),
-which records the source repository, commit, and workflow run that produced
-it as a signed, transparency-logged statement. The GitHub CLI verifies this
-directly:
+| Evidence | What to inspect |
+| --- | --- |
+| Checksum | Download bytes match the published digest |
+| Cosign signature | Bytes match an accepted repository/workflow signing identity |
+| Signed SBOM | The signer supplied this dependency inventory; compare it with the selected build |
+| Source and tests | Implementation and test evidence for the chosen operation |
 
-```sh
-gh attestation verify opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz \
-  --repo opaque-dev/opaque
-```
-
-This checks a `https://slsa.dev/provenance/v1` predicate by default and
-confirms both the artifact's digest and the identity of the workflow that
-built it, giving you the commit-level linkage the signature check alone
-does not. It requires `gh` to reach the GitHub API (`gh auth status` should
-already be set up, or use `--owner opaque-dev` in place of `--repo` if
-you would rather not pin the exact repository name); offline verification
-against a locally downloaded attestation bundle is also available, see `gh
-attestation verify --help`.
-
-## 4. Embedded dependency manifest
-
-*Also starting with the release that first ships this step.*
-
-Each release binary (`opaqued`, `opaque`, `opaque-mcp`,
-`opaque-approve-helper`, `opaque-approver`, `opaque-web`, and the two
-auxiliary binaries `opaque-mcp-contract` and `opaque-evidence`) is built
-with `cargo auditable build`, which links the exact dependency tree,
-including versions, into the compiled binary itself: a `Cargo.lock` handed
-to you separately from the binary could always have been tampered with
-independently of it, but data linked into the binary you already checksummed
-and signature-verified above cannot be swapped out on its own. Extract and
-audit it with
-[`cargo-audit`](https://github.com/rustsec/rustsec/tree/main/cargo-audit)
-after installing it (`cargo install cargo-audit`):
-
-```sh
-tar xzf opaque-0.3.0-x86_64-unknown-linux-gnu.tar.gz opaque
-cargo audit bin opaque
-```
-
-This reports the full dependency list `cargo-audit` extracted from the
-binary and cross-references it against the RustSec advisory database,
-independent of whatever CI produced the binary; release CI runs the same
-check as a build gate (`scripts/verify_auditable_binary.py`) so a binary
-missing this data never ships. A clean `cargo audit bin` result reports the
-dependency list with no forced network fetch of the binary's own build
-inputs: everything it verifies came from the binary you already downloaded
-and checksummed above.
-
-## Putting it together
-
-Each layer answers a different question:
-
-| Check | Answers |
-|---|---|
-| Checksum | Did the download arrive intact? |
-| Cosign signature | Did this exact repository's release workflow produce this exact file? |
-| SLSA provenance | Which commit, and which workflow run, built this file? |
-| `cargo audit bin` | What did that build actually link in, and is any of it known-vulnerable? |
-
-None of the four is a substitute for the others: a matching checksum says
-nothing about authorship, a valid signature says nothing about which source
-commit was built, and a clean dependency audit says nothing about whether
-the archive you have was tampered with after signing. Run them together for
-a release you are about to deploy, especially into an environment where
-`trust_domain.enforce = true` ([hardening guide](hardening.md)) makes the
-binary itself part of the trust boundary.
+These checks do not establish reproducible builds, a trustworthy runtime host,
+regulatory certification or customer operating effectiveness. Continue with
+[deployment verification](../evaluation-guide.md) before granting broker custody.

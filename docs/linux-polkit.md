@@ -41,14 +41,14 @@ The policy uses `auth_self` for active sessions:
 - `allow_inactive=no`: Denies requests from inactive sessions (SSH, screen locked on some setups)
 - `allow_active=auth_self`: Requires the user to authenticate with their own password
 
-## Supported Desktops
+## Desktop setup
 
-See [Deployment](deployment.md) for the full tiered support matrix. Summary:
-
-- **Tier 1 (full support):** GNOME 42+, KDE Plasma 5.20+
-- **Tier 2 (supported, minor setup):** MATE, XFCE, Cinnamon, Budgie, LXQt
-- **Tier 3 (manual setup):** Sway, Hyprland, i3, dwm (user must manually start a polkit agent)
-- **Tier 4 (unsupported, fail closed):** Headless, SSH, containers
+GNOME/GTK systems commonly use `zenity`; KDE/Qt systems commonly use `kdialog`.
+Tiling window managers need a separately started polkit authentication agent.
+Check the actual distribution and session rather than assuming the components
+are installed. Headless, SSH and container sessions do not supply this local
+GUI approval path; use an applicable [out-of-band review](remote-approvals.md)
+for supported workflows.
 
 ## Credential Caching
 
@@ -56,7 +56,7 @@ Some polkit auth agents (notably GNOME's) cache credentials for a short period (
 
 ## Daemon Lifecycle
 
-Use a systemd user service. See [Deployment](deployment.md) for the recommended unit file with hardening options.
+Use a systemd user service. The CLI installs a user service; inspect its generated unit. See [deployment](deployment.md) for the dedicated service-account alternative.
 
 ```bash
 systemctl --user enable --now opaqued.service
@@ -65,5 +65,5 @@ systemctl --user enable --now opaqued.service
 ## Notes
 
 - Approval leases ("approve for N minutes") are implemented as daemon-side TTL grants, not by weakening the polkit policy to `auth_self_keep`.
-- If you need to test without a graphical session, you cannot; this is by design. The daemon requires a display server and a polkit agent.
+- This factor requires a graphical session and polkit agent. Other approval factors have separate workflow prerequisites.
 - Tiling WM users (Sway, i3, etc.) must ensure a polkit agent is running. Common choices: `polkit-gnome-authentication-agent-1` or `lxpolkit`.

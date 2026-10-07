@@ -6,42 +6,57 @@ hide:
 
 # Opaque
 
-**Approve the work. Keep secrets secret.**
+**Gate and audit agents at scale.**
 
-Give coding agents a reviewed task with a fixed scope and expiry.
-Opaque checks authority before dispatch and keeps credentials with the broker.
+Opaque gives platform and security teams control over AI agent actions.
+Define permitted operations, require human approval, and record what happened.
 
-[Try it out](https://demo.opaque.info/) · [Architecture](architecture.md) ·
-[Installation and release status](getting-started.md)
+[Try the demo](https://demo.opaque.info/) · [Set up locally](tutorial.md)
 
-## Approve one staging release. Keep the scope fixed. { #approve-one-staging-release }
+Open-source core · macOS and Linux · [v0.6.0 and installation](getting-started.md)
 
-Your agent requests a release of a specific build. Review the image, destination,
-and workflow. Opaque binds approval to that task, with an expiry and at most one
-dispatch attempt.
+Hosted demo uses fictional data. [Demo guide](hosted-demo.md).
 
-- **Review:** the planned task pins the repository, workflow, commit, and image digest.
-- **Enforce:** a different build requires a new task and review. Production is outside
-  this staging operation. Current policy, identity, expiry, and revocation still apply.
-- **Inspect:** a timeout can leave the result unknown. The attempt stays consumed;
-  `opaque task show <task-id>` and `opaque task reconcile <task-id>` inspect evidence
-  without dispatching again.
+## A gated staging release { #approve-one-staging-release }
 
-## You set the permitted scope { #set-the-permitted-scope }
+Configure the release workflow and policy, then prepare a manifest.
+Example commands; replace `<task-id>`:
 
-Operators configure the allowed repository, workflow, branch, and image source.
-Agent requests must fit that scope before approval can authorize an attempt.
-Read [task setup, limits, and evidence](bounded-work.md).
+```sh
+opaque task plan --manifest ./release.json
+opaque task run <task-id>
+opaque task show <task-id>
+```
 
-## Know the boundary
+Approval covers one build, one destination, and one dispatch attempt.
+A timeout can leave the result unknown; the attempt stays consumed.
+Dispatch acceptance is not deployment success.
+[Task setup and revocation](bounded-work.md).
 
-A separate broker identity isolates custody from the agent's OS user. The default
-same-user setup does not. Other agent access remains outside Opaque. Workflow dispatch
-is not deployment success. The workflow and its credentials also need review; these
-controls apply to work routed through Opaque. Read the [architecture and evidence](architecture.md).
+## Gate access { #set-the-permitted-scope }
 
-## Start with one task
+Deny by default. Limit operations by identity and target,
+and require human approval before sensitive execution. [Policy rules](policy.md).
 
-Set up Opaque with the secret-write tutorial, or bring a staging workflow to a pilot
-conversation. [Try it out](https://demo.opaque.info/) or [set up locally](tutorial.md). The hosted
-demo uses fictional portfolio data and a separate workflow; see the [guide](hosted-demo.md).
+## Bound the work { #bound-agent-work }
+
+Give tasks an exact scope and expiry. Revoke future dispatches;
+an approval cannot expand the reviewed task. [Task limits](bounded-work.md).
+
+## Audit actions { #audit-agent-actions }
+
+Inspect decisions, approvals, and observed outcomes.
+Verify exported audit ranges with independently held checkpoints.
+[Evidence verification](evidence-checkpoints.md).
+
+## Manage policy across brokers { #policy-across-brokers }
+
+Public core v0.6.0 includes signed policy distribution and SIEM export.
+Fleet management is separate enterprise software.
+[Signed policies and audit export](federation.md).
+
+## Protect the broker { #know-the-boundary }
+
+Route agent actions through Opaque and run the broker under a separate OS identity.
+Same-user installs do not isolate custody; direct agent access remains outside the gate.
+[Deployment boundaries and evidence](architecture.md).

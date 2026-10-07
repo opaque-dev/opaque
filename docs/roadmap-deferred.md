@@ -1,43 +1,40 @@
-# Deferred
+# Deferred capabilities
 
-Out of scope for the current release, not "coming soon": each needs its own
-threat model, evidence, or customer pull before it's worth building.
+These capabilities are outside the public core release. They describe remaining
+work, not scheduled availability.
 
 ## Developer password-broker expansion
 
-New password-filling workflows and developer password-broker onboarding are
-deprioritized. Product work focuses on bounded authority, trusted human review,
-and inspectable execution evidence. Existing credential integrations remain
-supported enforcement dependencies; custody does not by itself authorize work.
-See the [scoped authority foundation](scoped-authority.md) for implemented library
-boundaries and the integration work still required.
+Password filling and password-broker onboarding are deprioritized. Current work
+focuses on gated actions, bounded authority, trusted review and inspectable evidence.
+Credential integrations remain enforcement dependencies.
 
 ## iOS second-device approvals (Face ID)
 
-Design only; see [mobile approvals](mobile-approvals.md). No iOS app ships.
-The paired-second-device factor that does ship is desktop-to-desktop
-(Ed25519), not mobile.
+No iOS app ships. The `ios_faceid` wire factor is desktop pairing;
+[second-device status](mobile-approvals.md) distinguishes current review from the
+mobile design.
 
 ## General-purpose tenant operator
 
-Tenant support (see [enterprise architecture](enterprise-architecture.md))
-is scoped to validated operation families. A general-purpose operator for
-arbitrary workloads needs its own isolation model.
+A general-purpose workload operator needs separately qualified isolation and
+resource contracts. Kubernetes operator implementation belongs to the private
+enterprise repository; public tenant binding is not workload isolation.
 
 ## Hardware attestation and confidential compute
 
-Posture attestation today is software-only (custody + audit-chain
-integrity). Hardware measurement, confidential VM/enclave attestation, and
-key release gated on it need a real measured runtime and verifier policy.
+Current posture reports are software claims signed by an enrolled key holder.
+Hardware measurement, confidential-runtime attestation and measurement-gated key
+release require a measured runtime and verifier policy.
 
 ## Isolation for co-resident sibling agents
 
-Trust-domain enforcement separates the daemon's uid from the agent's, not
-multiple agents sharing a host from each other, and not from a host
-administrator who already has root. No microVM/vsock isolation exists.
+Separate broker custody isolates the agent account from the broker, not agents
+from each other when they share an account. Host administrators remain trusted.
+No microVM/vsock isolation is provided.
 
 ## External, witnessed transparency
 
-Signed audit exports verify independently at the receiving SIEM. Publicly
-witnessed transparency (signed checkpoints, third-party-checkable Merkle
-proofs) needs a named relying party before it's worth building.
+[Signed checkpoints](evidence-checkpoints.md) authenticate declared audit ranges.
+Externally witnessed logs and third-party Merkle proofs are separate work; receiving
+a valid checkpoint does not establish global completeness.

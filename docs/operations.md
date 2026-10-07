@@ -1,12 +1,20 @@
-# Operations (Contract)
+# Operation contracts
 
-Opaque exposes **operations**, not raw secret values.
+Call a registered operation through the CLI or a built-in MCP tool. The broker
+checks policy, required approval and the captured action before provider dispatch.
+For example, with a configured test repository and credential references:
 
-v1 transport is local only:
+```sh
+opaque github set-secret --repo myorg/test-repo \
+  --secret-name TEST_TOKEN --value-ref keychain:opaque/test-token
+```
 
-- `opaque` (CLI) -> Unix domain socket -> `opaqued` (daemon)
-
-For MCP-aware tools (Claude Code), `opaque-mcp` provides a stdio-based MCP server that exposes Safe operations as tools. See [MCP integration](mcp-integration.md).
+Generic operations use local Unix-socket transport. Tasks, scoped authority and
+qualified third-party MCP use [separate request contracts](architecture.md#what-approval-authorizes).
+Check the selected broker's [operation catalog](web-dashboard.md): registered,
+enabled and policy-permitted are different states. This reference describes the
+current source; provider guides state implementation availability and qualification
+requirements.
 
 ## Prepared action contract
 
@@ -41,326 +49,134 @@ internal task-operation names cannot be invoked through generic `execute`.
 Upgrading requires a daemon restart, which clears old in-memory generic leases;
 persistent task allowances and audit history retain their existing semantics.
 
-## Safety Classes
+## Safety classes
 
-| Class | Meaning | Agent Access |
-|------:|---------|--------------|
-| `SAFE` | Uses secrets internally and must not return them | Allowed (with policy + approvals) |
-| `SENSITIVE_OUTPUT` | Output may contain credential-like data | Requires policy permission and out-of-band approval |
-| `REVEAL` | Returns plaintext secrets | Never (hard-blocked in v1) |
+| Class | Contract |
+| --- | --- |
+| `SAFE` | Use credentials internally and omit their values from the operation result; still requires policy and applicable approval |
+| `SENSITIVE_OUTPUT` | Potentially sensitive output; explicit policy and out-of-band approval. Withholding is operation-specific |
+| `REVEAL` | Plaintext-secret operation; broker hard-blocks every client |
 
-## Secret Ref Schemes
+A class name does not prove harmless metadata or absence of side effects.
+Response sanitization is enforced, but pattern scrubbing is not a general
+confidentiality guarantee. In particular, STS AssumeRole is sensitive output,
+while sandbox stdout/stderr are withheld by that operation's contract.
 
-Operations that accept `value_ref` or `*_token_ref` support:
+## Secret references
 
-- `env:NAME`
-- `keychain:service/account`
-- `profile:<name>:<key>`
-- `onepassword:<vault>/<item>/<field>`
-- `bitwarden:<project>/<key>` or `bitwarden:<secret-id>`
-- `vault:<path>#<field>`
+Base references are `env:NAME`, `keychain:service/account` and
+`profile:<name>:<key>`. Provider references include:
 
-## Implemented Operations
+| Provider | Reference | Configuration |
+| --- | --- | --- |
+| 1Password | `onepassword:<vault>/<item>/<field>` | Configured Connect or trusted `op` backend |
+| Bitwarden | `bitwarden:<project>/<key>` or `bitwarden:<secret-id>` | [Secrets Manager](bitwarden.md) |
+| Vault | `vault:<path>#<field>` | [Vault resolver and leases](vault.md) |
+| AWS | `aws:<secret-name>` or `aws:ssm:<parameter>` | [Region and signing credentials](aws.md) |
+| Google Cloud | `gcp:<project-number>/<secret>[/version]` | [Secret Manager](gcp.md) |
+| Azure | `azure:<vault-name>/<secret-name>[/version]` | [Key Vault](azure.md) |
+
+References select values for an authorized consumer; they do not make a reveal
+operation available. `env:` reads the broker environment.
+
+## Local operations
 
 ### `test.noop` (`SAFE`)
 
-No inputs.
-
-Result:
-
-- `{ "status": "ok" }`
+No inputs; result contract is `{ "status": "ok" }`. Use it to test local policy
+and approval without a provider effect.
 
 ### `sandbox.exec` (`SENSITIVE_OUTPUT`)
 
-Runs a command in a platform sandbox using an execution profile.
-
-Inputs (via `opaque exec --profile <name> -- <cmd...>`):
-
-- `profile`: profile name (loads `~/.opaque/profiles/<name>.toml`)
-- `command`: command argv array
-
-Result:
-
-- `exit_code`: i32
-- `duration_ms`: u64
-- `stdout_length`: u64
-- `stderr_length`: u64
-- `truncated`: bool (true when capture was capped)
-
-Notes:
-
-- The broker returns output lengths and execution metadata. Captured stdout and
-  stderr remain inside the sandbox execution boundary and are not returned to
-  the caller. `SENSITIVE_OUTPUT` still requires approval through a trusted review
-  surface; sandboxed commands must not disclose secret material through other
-  channels.
-
-### `github.set_actions_secret` (`SAFE`)
-
-Sets a GitHub Actions secret using GitHub's public-key encryption.
-
-Supports both:
-
-- repo-level Actions secrets
-- environment-level Actions secrets
-
-Inputs:
-
-- `repo`: `owner/repo`
-- `secret_name`: secret name (ex: `AWS_ACCESS_KEY_ID`)
-- `value_ref`: secret reference (ex: `keychain:opaque/my-token`)
-- optional: `github_token_ref`: GitHub PAT ref (default: `keychain:opaque/github-pat`)
-- optional: `environment`: when set, writes an Actions environment secret instead of a repo secret
-
-Result:
-
-- `status`: `created` | `updated`
-- `repo`
-- optional: `environment`
-- `secret_name`
-
-Notes:
-
-- Never return the secret value or its ciphertext.
-- For GitHub Enterprise Server or local testing, `opaqued` honors `OPAQUE_GITHUB_API_URL` as the API base URL.
-
-### `github.set_codespaces_secret` (`SAFE`)
-
-Sets a GitHub Codespaces secret.
-
-Supports both:
-
-- user-level Codespaces secrets
-- repo-level Codespaces secrets
-
-Inputs:
-
-- `secret_name`
-- `value_ref`
-- optional: `repo` (`owner/repo`) (when set, creates a repo-level Codespaces secret)
-- optional: `github_token_ref` (default: `keychain:opaque/github-pat`)
-- optional: `selected_repository_ids` (user-level only; when omitted, GitHub defaults apply)
-
-Result:
-
-- `status`: `created` | `updated`
-- `secret_name`
-- optional: `repo` (repo-level)
-- optional: `scope`: `"user"` (user-level)
-
-Notes:
-
-- Never return the secret value or its ciphertext.
-
-### `github.set_dependabot_secret` (`SAFE`)
-
-Sets a GitHub Dependabot repository secret.
-
-Inputs:
-
-- `repo`: `owner/repo`
-- `secret_name`
-- `value_ref`
-- optional: `github_token_ref`
-
-Result:
-
-- `status`: `created` | `updated`
-- `repo`
-- `secret_name`
-
-Notes:
-
-- Never return the secret value or its ciphertext.
-
-### `github.set_org_secret` (`SAFE`)
-
-Sets a GitHub Actions organization secret.
-
-Inputs:
-
-- `org`
-- `secret_name`
-- `value_ref`
-- optional: `github_token_ref`
-- optional: `visibility`: `"all" | "private" | "selected"` (default: `"private"`)
-- `selected_repository_ids`: required when `visibility = "selected"`; rejected for other visibility modes
-
-Result:
-
-- `status`: `created` | `updated`
-- `org`
-- `secret_name`
-
-Notes:
-
-- Never return the secret value or its ciphertext.
-
-### `gitlab.set_ci_variable` (`SAFE`)
-
-Sets a GitLab CI/CD variable for a project.
-
-Inputs:
-
-- `project`: project path or ID (ex: `group/project`)
-- `key`: variable key (ex: `DATABASE_URL`)
-- `value_ref`: secret reference (ex: `keychain:opaque/db-url`)
-- optional: `gitlab_token_ref`: GitLab token ref (default: `keychain:opaque/gitlab-pat`)
-- optional: `environment_scope` (default: `"*"`; updates match this exact environment scope)
-- optional: `protected`: boolean
-- optional: `masked`: boolean
-- optional: `raw`: boolean
-- optional: `variable_type`: `"env_var" | "file"` (omission preserves an existing value or uses the provider default on creation)
-
-Result:
-
-- `status`: `created` | `updated`
-- `project`
-- `key`
-- optional: `environment_scope`
-- optional: `protected`
-- optional: `masked`
-- optional: `raw`
-- optional: `variable_type`
-
-Notes:
-
-- Never returns variable values.
-- Supports GitLab self-managed or alternate API hosts via `OPAQUE_GITLAB_API_URL`.
-
-### `onepassword.list_vaults` (`SAFE`)
-
-Lists accessible 1Password vaults (names + descriptions only).
-
-Result:
-
-- `vaults`: array of `{ name, description }`
-
-Notes:
-
-- Safe for agents if your policy allows it; does not return vault IDs or any secret values.
-
-### `onepassword.list_items` (`SAFE`)
-
-Lists item titles in a vault (no field values).
-
-Inputs:
-
-- `vault`: vault name
-
-Result:
-
-- `vault`: vault name
-- `items`: array of `{ title, category }`
-
-Notes:
-
-- Safe for agents if your policy allows it; does not return item IDs or any secret values.
-
-### `onepassword.read_field` (`REVEAL`)
-
-Reads a single field value from a 1Password item.
-
-Inputs:
-
-- `vault`: vault name
-- `item`: item title
-- `field`: field label
-
-Result:
-
-- `vault`
-- `item`
-- `field`
-- `value` (plaintext)
-
-Notes:
-
-- This violates the core v1 rule "LLMs get operations, not values". It should not be enabled for agent workflows. If kept at all, it should be hard-blocked or reserved for interactive human-only flows with explicit friction.
-
-### `bitwarden.list_projects` (`SAFE`)
-
-Lists accessible Bitwarden Secrets Manager projects.
-
-Inputs: none.
-
-Result:
-
-- `projects`: array of `{ name, id }`
-
-Notes:
-
-- Safe for agents if your policy allows it; returns project metadata only.
-
-### `bitwarden.list_secrets` (`SAFE`)
-
-Lists secret names in a Bitwarden project (no values).
-
-Inputs:
-
-- optional: `project`: project name (filters results)
-
-Result:
-
-- `secrets`: array of `{ key, id, project }`
-
-Notes:
-
-- Safe for agents if your policy allows it; does not return secret values.
-
-### `bitwarden.read_secret` (`REVEAL`)
-
-Reads a single secret value from Bitwarden Secrets Manager.
-
-Inputs:
-
-- `id`: secret UUID, or
-- `project` + `key`: project name and secret key
-
-Result:
-
-- `key`
-- `value` (plaintext)
-
-Notes:
-
-- Hard-blocked in v1. Returns plaintext secrets; should not be enabled for agent workflows. Reserved for interactive human-only flows with explicit friction.
-
-### `aws.*` (AWS STS / Secrets Manager / SSM Parameter Store)
-
-Registered by default, but **the real signed AWS transport isn't implemented**. The handler only activates with `OPAQUE_AWS_ALLOW_INSECURE=1` plus an explicit loopback `OPAQUE_AWS_MOCK_URL`, an unsigned mock transport for local testing. Without both, every `aws.*` call fails closed; there's no SigV4 signing against real AWS endpoints today.
-
-Invoke through the generic dispatcher, e.g. `opaque execute aws.get_caller_identity`.
-
-STS:
-
-- `aws.get_caller_identity` (`SAFE`): account, ARN, user ID. No inputs.
-- `aws.assume_role` (`SENSITIVE_OUTPUT`): inputs `role_arn`, optional `session_name`. Returns temporary credentials.
-
-Secrets Manager:
-
-- `aws.list_secrets` (`SAFE`): no inputs. Lists secret names.
-- `aws.get_secret_value` (`REVEAL`): input `secret_id`. Hard-blocked for agent clients (see notes above).
-- `aws.create_secret` (`SAFE`): inputs `name`, `value`, optional `description`.
-- `aws.put_secret_value` (`SAFE`): inputs `secret_id`, `value`.
-- `aws.delete_secret` (`SAFE`): input `secret_id`. Schedules deletion.
-
-SSM Parameter Store:
-
-- `aws.get_parameter` (`REVEAL`): input `name`. Hard-blocked for agent clients.
-- `aws.put_parameter` (`SAFE`): inputs `name`, `value`, optional `type`, `overwrite`.
-- `aws.get_parameters_by_path` (`SAFE`): input `path`, optional `with_decryption`. Lists parameters under a path.
-- `aws.delete_parameter` (`SAFE`): input `name`.
-
-Notes:
-
-- `REVEAL` operations (`aws.get_secret_value`, `aws.get_parameter`) are never allowed for agent clients: the same global policy hard-block that applies to `onepassword.read_field` and `bitwarden.read_secret`.
-- GCP, Azure, Doppler, and Infisical have compiled client/resolver scaffolding behind opt-in Cargo features but **zero operations registered and zero handler wiring**: they are dormant, not "coming soon."
-
-## Deferred Specs (Not Implemented In v1)
-
-These are design placeholders and should not be treated as supported operations in v1:
-
-- `k8s.set_secret`
-- `k8s.apply_manifest`
-- `http.request_with_auth`
+```sh
+opaque exec --profile dev -- command argument
+```
+
+Inputs are `profile` and a JSON argv `command` array. The prepared profile/digest
+binds its effective configuration. Results contain `exit_code` (i32),
+`duration_ms`, `stdout_length`, `stderr_length` (u64) and `truncated` (bool).
+CLI and MCP return lengths/status, never captured stdout/stderr content.
+The child still receives configured secrets; permitted egress and metadata can
+disclose them. See [sandbox prerequisites](deployment.md#sandbox-prerequisites).
+
+## Repository operations
+
+GitHub/GitLab write results omit secret values and ciphertext. GitHub writes return
+`status` (`created`/`updated`), resource identifiers and secret name; these are API
+outcomes, not verification of a stored value or deployment success.
+
+| Operation (`SAFE`) | Required inputs | Optional inputs / scope |
+| --- | --- | --- |
+| `github.set_actions_secret` | `repo`, `secret_name`, `value_ref` | `environment` selects environment scope; `github_token_ref` |
+| `github.set_codespaces_secret` | `secret_name`, `value_ref` | `repo` selects repository scope, otherwise user; `selected_repository_ids` for user scope; `github_token_ref` |
+| `github.set_dependabot_secret` | `repo`, `secret_name`, `value_ref` | `github_token_ref` |
+| `github.set_org_secret` | `org`, `secret_name`, `value_ref` | `visibility` defaults to `private`; `selected_repository_ids` required only for `selected`; `github_token_ref` |
+| `gitlab.set_ci_variable` | `project`, `key`, `value_ref` | `environment_scope`, `protected`, `masked`, `raw`, `variable_type`, `gitlab_token_ref` |
+
+GitHub token references default to `keychain:opaque/github-pat`; GitLab defaults
+to `keychain:opaque/gitlab-pat`. Codespaces results distinguish user/repository
+scope. GitLab updates match the exact environment scope (default `*`); omitted
+`variable_type` preserves an existing value or uses the creation default. Its
+result includes applicable scope/options and never the variable value.
+
+Trusted broker environment can select `OPAQUE_GITHUB_API_URL` or
+`OPAQUE_GITLAB_API_URL` for alternate API hosts. Those destinations participate in
+prepared authorization. Read [GitHub inventory](github-secret-inventory.md) for
+list/delete operations, and [bounded work](bounded-work.md) for staging releases.
+
+## Credential-store metadata
+
+| Operation (`SAFE`) | Input | Result contract |
+| --- | --- | --- |
+| `onepassword.list_vaults` | None | `vaults`: names/descriptions |
+| `onepassword.list_items` | `vault` | Vault and item titles/categories |
+| `bitwarden.list_projects` | None | `projects`: names/IDs |
+| `bitwarden.list_secrets` | Optional `project` filter | `secrets`: keys/IDs/projects |
+
+Metadata can be sensitive; admitting a list operation is still a policy decision.
+`onepassword.read_field` and `bitwarden.read_secret` are registered `REVEAL`
+operations and are blocked for human and agent clients, not interactive escape
+hatches.
+
+## Cloud operations
+
+### AWS
+
+The current client uses regional AWS Signature V4 and real STS, Secrets Manager
+and SSM protocols. Older mock-only builds cannot contact AWS. Configure explicit
+Region/credential references and independently qualify the target account; see
+[AWS setup and protocol evidence](aws.md).
+
+| Operation | Class | Input |
+| --- | --- | --- |
+| `aws.get_caller_identity` | `SAFE` | None; returns account, ARN and user ID |
+| `aws.assume_role` | `SENSITIVE_OUTPUT` | `role_arn`, optional `session_name`; temporary credential fields |
+| `aws.list_secrets` | `SAFE` | None; secret names |
+| `aws.create_secret` | `SAFE` | `name`, `value`, optional `description` |
+| `aws.put_secret_value` | `SAFE` | `secret_id`, `value` |
+| `aws.delete_secret` | `SAFE` | `secret_id`; schedules recovery-capable deletion |
+| `aws.put_parameter` | `SAFE` | `name`, `value`, optional `type`, `overwrite` |
+| `aws.get_parameters_by_path` | `SAFE` | `path`, optional `with_decryption`; handler returns metadata only |
+| `aws.delete_parameter` | `SAFE` | `name` |
+| `aws.get_secret_value`, `aws.get_parameter` | `REVEAL` | Blocked for all clients |
+
+Collection bounds fail explicitly rather than returning incomplete lists as
+complete. Lost/invalid write acknowledgments can mean an unknown effect. The
+client does not automatically retry; read back the resource before new authority.
+Loopback fixtures use fixed synthetic credentials and do not qualify live AWS.
+
+### Google Cloud and Azure
+
+Current source registers and wires Google Secret Manager and Azure Key Vault
+handlers; they are enabled only with valid provider configuration. See
+[GCP operation/credential contracts](gcp.md) and
+[Azure operation/credential contracts](azure.md) for the exact metadata/write
+operations, admitted inputs, supported authentication and response limits.
+Source or fixture support does not establish a live deployment's qualification.
+Doppler/Infisical scaffolding does not establish registered broker operations.
+
+## Deferred operation names
+
+`k8s.set_secret`, `k8s.apply_manifest` and `http.request_with_auth` are design
+placeholders, not supported generic operations. Keep proposed contracts separate
+from the selected broker's live catalog.

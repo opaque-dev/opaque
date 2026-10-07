@@ -25,7 +25,7 @@
 
 /* Shared Opaque redaction glyph, including the navigation drawer on mobile. */
 .md-header__button.md-logo svg,
-.md-nav__button.md-logo svg {
+.md-nav--primary .md-nav__title .md-nav__button.md-logo svg {
   display: none;
 }
 
@@ -223,7 +223,7 @@
 }
 
 .op-hero h1 {
-  /* Viewport-sized fallback first; the slogan is two deliberate lines, so
+  /* Viewport-sized fallback first; the headline is two deliberate lines, so
      where container queries exist the type follows its own column and the
      break never lands mid-sentence. */
   font-size: clamp(1.9rem, 5.2vw + 1rem, 3.05rem);
@@ -956,7 +956,7 @@
   .op-architecture .op-art-packet { opacity: 0; }
 }
 
-/* Product explanation: one operation, followed through three concrete stages. */
+/* Homepage controls and one concrete workflow. */
 .op-home .op-text-link {
   display: inline-block;
   padding: 0.5rem 0;
@@ -967,6 +967,40 @@
   text-decoration-color: var(--op-line-strong);
 }
 .op-home .op-text-link:hover { color: var(--op-accent); }
+.op-release { min-width: 0; }
+.op-release h2 {
+  font-size: 1.1rem;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+.op-release p {
+  margin-top: 0.7rem;
+  max-width: 58ch;
+  color: var(--op-text-dim);
+  font-size: 0.8rem;
+  line-height: 1.65;
+}
+.op-release .op-example { margin-top: 1rem; }
+.op-controls { margin: 0; }
+.op-controls > div {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr) minmax(0, 0.8fr);
+  align-items: baseline;
+  gap: 1.5rem;
+  padding: 1.1rem 0;
+}
+.op-controls > div + div { border-top: 1px solid var(--op-line); }
+.op-controls dt {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+.op-controls dd {
+  margin: 0;
+  color: var(--op-text-dim);
+  font-size: 0.84rem;
+}
+.op-controls dd:last-child { justify-self: end; }
 .op-workflow { padding: 0; margin: 0; list-style: none; }
 .op-workflow > li {
   display: grid;
@@ -1042,10 +1076,12 @@
 .op-invitation .op-actions { margin-top: 0; }
 @media screen and (max-width: 44.9375em) {
   .op-workflow > li, .op-detail, .op-invitation { grid-template-columns: minmax(0, 1fr); }
+  .op-controls > div { grid-template-columns: minmax(0, 1fr); gap: 0.4rem; }
+  .op-controls dd:last-child { justify-self: start; }
   .op-workflow > li { gap: 1.3rem; }
   .op-example pre { padding: 0.8rem; font-size: 0.58rem; }
 }
 
 .op-home .op-scope-label { margin: 0 0 0.4rem; color: var(--op-text-dim); font: 0.62rem var(--md-code-font-family); }
 
-.op-home h2[id], .op-home #publish-a-github-actions-secret { scroll-margin-top: 5rem; }
+.op-home h2[id], .op-controls dt[id], .op-home #publish-a-github-actions-secret { scroll-margin-top: 5rem; }

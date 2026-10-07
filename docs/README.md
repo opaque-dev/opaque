@@ -1,9 +1,10 @@
 # Documentation
 
-Start with one operation, then inspect the boundary before widening access.
+Choose an agent-security deployment pattern, run one gated operation, then inspect its evidence.
 
 | Purpose | Entry point |
 | --- | --- |
+| Choose custody and multi-broker topology | [Deployment patterns](enterprise-architecture.md) |
 | Run a first operation | [Tutorial](tutorial.md) |
 | Install, configure, or upgrade | [Install and command reference](getting-started.md) |
 | Evaluate the security model | [Architecture and evidence](architecture.md) |
@@ -16,7 +17,7 @@ Start with one operation, then inspect the boundary before widening access.
 - **Review:** [workstation approval](remote-approvals.md), [Linux polkit](linux-polkit.md), [mobile approval status](mobile-approvals.md).
 - **Evidence:** [checkpoints](evidence-checkpoints.md), [audit analytics](audit-analytics.md), [storage](storage.md).
 - **Integrations:** [Bitwarden](bitwarden.md), [Vault](vault.md), [LLM harness](llm-harness.md).
-- **Extensions:** [dashboard](web-dashboard.md), [federation](federation.md), [public libraries](reusable-core.md), [organization architecture](enterprise-architecture.md).
+- **Extensions:** [dashboard](web-dashboard.md), [federation](federation.md), [public libraries](reusable-core.md), [deployment patterns](enterprise-architecture.md).
 
 ## Background
 

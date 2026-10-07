@@ -1,45 +1,51 @@
-# Architecture
+# Understand broker authorization { #architecture }
 
-Opaque is a local authority broker for agent-driven work. The agent requests a permitted
-operation; the broker checks authority, obtains required approval, uses the
-credential and returns a constrained result. A useful first evaluation is one
-repository operation, such as publishing a GitHub Actions secret, with a known
-approver and an observable outcome.
+An approval binds captured work to a requester, target and lifetime. Current
+policy, identity and revocation still apply when the broker dispatches it.
+For a configured staging-release manifest:
 
-This page describes source at
+```sh
+opaque task plan --manifest ./release.json
+opaque task run <task-id>
+opaque task show <task-id>
+```
+
+Inspect dispatch and workflow evidence separately: API acceptance is not deployment
+success. Choose the [custody/topology pattern](enterprise-architecture.md) before
+admitting untrusted agents.
+
+The generic/task/MCP source references below are pinned to
 [83e7924](https://github.com/opaque-dev/opaque/tree/83e7924960f809e87379a54996317dbe1422fe70).
-Source implementation does not establish availability in an installed release.
-Check the selected version and the capability-specific qualification requirements.
-
-The [scoped authority foundation](scoped-authority.md) is a separate path for
-finite delegated work, available from v0.6.0 through `opaque scope`. It is not
-wired into the execution paths described below.
+Check the selected release and each workflow's qualification requirements.
 
 <a id="1-design-goals"></a>
 <a id="3-crates"></a>
 
 ## Request flow
 
-```mermaid
-flowchart LR
-  Agent["Agent / CLI"] --> Adapter["CLI or MCP adapter"]
-  Adapter -->|Unix socket| Broker["opaqued: identity + policy"]
-  Human["Trusted reviewer"] -->|required approval| Broker
-  Broker -->|authorized operation| Provider["Provider API"]
-  Provider --> Broker
-  Broker -->|constrained result| Agent
-  Broker --> Evidence["Audit + receipts"]
-```
+The daemon prepares the effective target, parameters and credential references
+before policy or review. Generic execution uses that captured action; values are
+resolved after authorization. Task manifests pin their complete planned scope.
+CLI and MCP are adapters; the broker owns enforcement. See
+[operation contracts](operations.md) and [core boundaries](reusable-core.md).
 
-The broker prepares the effective target, parameters and credential references
-before review. Policy, approval and execution use that captured action; secret
-values are resolved only after authorization. Current policy and requester
-authority are checked at the dispatch boundary. Revocation cannot undo an already
-authorized provider effect.
+<a id="6-approval"></a>
+<a id="8-bounded-agent-work"></a>
 
-The daemon is the enforcement point. CLI, MCP and the read-only local dashboard
-are interfaces to it. See [operation contracts](operations.md) and
-[reusable core](reusable-core.md) for implementation boundaries.
+## What approval authorizes
+
+| Path | Scope and consumption |
+| --- | --- |
+| [Generic operation](operations.md) | Prepared action bound to client, target, references, parameters and verified delegation. Policy and operation minimums set the gate. A first-use lease can permit repeated matching operations until expiry, with an optional attempt budget. |
+| [Bounded task](bounded-work.md) | Immutable manifest reviewed in full locally or, for supported families, by a paired workstation. Each action consumes a durable attempt before dispatch. |
+| [Third-party MCP](mcp-qualified-tools.md) | Single-use invocation under a signed route, pinned schemas and finite arguments. Requires local native full review and its own durable attempt ledger. |
+| [Scoped authority](scoped-authority.md) | Separate v0.6.0 `opaque scope` path: finite resources/values, expiry and attempt budget, with per-action review by default. Its stores and executor are separate from the paths above. |
+
+Changed work requires applicable new authorization. Task/MCP failures and unknown
+outcomes do not refund attempts; inspect or reconcile before proposing replacement
+work. Revocation before the final fence blocks dispatch, but cannot undo an earlier
+provider effect. An unsupported approval factor fails closed. A workstation task
+receipt does not authorize third-party MCP.
 
 <a id="2-threat-model"></a>
 <a id="4-trust-boundaries"></a>
@@ -47,67 +53,43 @@ are interfaces to it. See [operation contracts](operations.md) and
 
 ## Trust boundaries
 
-The agent, its dependencies and its commands are untrusted. The broker, its
-administrators, credential stores and enrolled approval keys remain trusted.
-Opaque does not prevent an agent from exfiltrating credentials it can read through
-another path or using a separate credential to bypass the broker.
+The broker, its administrators, credential stores and enrolled approval keys are
+trusted; agent workloads are not. Enforce [separate broker custody](deployment.md)
+to keep agent accounts away from configuration, keys and authoritative state.
+Shared-account processes that obtain keys can compromise controls and forge
+locally valid history. Root and broker administrators remain trusted in split mode.
 
-**Custody is a deployment requirement.** Default session mode shares the user's
-identity; a process with access to the broker's keys can compromise its controls
-and forge locally valid audit history. Enforced trust-domain separation puts
-configuration, keys and authoritative state under a separate service account or
-container. Startup checks custody permissions. Follow [deployment](deployment.md)
-for that boundary; a separate directory under the same account is insufficient.
-
-Socket peer credentials and executable identity constrain clients. They do not
-prove a human is present: an agent can invoke the CLI. Verified delegated identity
-and current role/session state provide additional authority checks. See
-[identity](identity.md) and [policy](policy.md).
-
-<a id="6-approval"></a>
-<a id="8-bounded-agent-work"></a>
-
-## What approval authorizes
-
-| Path | Approved scope and consumption |
-| --- | --- |
-| **Generic operation** | One prepared action. The operation's minimum approval requirement and policy determine the gate. First-use leases bind client, target, references, parameters and any verified delegation; a lease can permit repeated matching operations until expiry. |
-| **Bounded task** | An immutable manifest reviewed in full through local native review or, for supported families, a paired workstation. Each action consumes a durable attempt before dispatch. Changed work requires a new task and review. |
-| **Third-party MCP invocation** | One invocation UUID under a signed route, pinned upstream schema and finite admitted arguments. Requires local native full review and a separate durable attempt. A workstation task approval does not authorize MCP. |
-
-Task and MCP failures, interruption and unknown outcomes do not refund consumed
-attempts. Inspect or reconcile before proposing new work. Required approval fails
-closed if no supported factor is available. Read [bounded work](bounded-work.md),
-[workstation review](remote-approvals.md) and [MCP qualification](mcp-qualified-tools.md)
-for exact supported contracts.
+Opaque governs broker-routed work. Other readable credentials or provider access
+can bypass it. OS peer/executable identity does not prove human presence: an agent
+can invoke the CLI. [Verified delegation](identity.md) and [policy](policy.md)
+supply the additional authority checks.
 
 <a id="7-sandboxed-execution"></a>
 
 ## Output and execution limits
 
-Brokered operations keep credentials outside the agent's process. Response
-sanitization is enforced in code; pattern scrubbing does not prove all output
-harmless. MCP registry v2 can disclose signed selections of bounded integer/status
-fields after a current-authority check; those values remain untrusted provider
-claims. Arbitrary upstream text is withheld.
+Provider inputs can stay in broker custody through credential references; allowed
+outputs follow the operation contract. Sanitization is enforced, but pattern
+scrubbing does not prove every output harmless. MCP v2 may disclose signed
+selections of bounded integer/status fields under current authority. These remain
+untrusted provider claims; arbitrary upstream text is withheld.
 
-`opaque exec` instead injects secrets into a child process. Its Linux/macOS sandbox
-is a compatibility control, not a confidentiality guarantee when the agent chooses
-the command.
+`opaque exec` gives profile secrets to a child. Its Linux/macOS sandbox is a
+compatibility control, not confidentiality from an agent-selected command.
+Permitted egress and status/length metadata remain disclosure paths.
 
 <a id="10-audit"></a>
 
 ## What the evidence supports
 
-Audit chaining and authenticated heads detect covered tampering when the attacker
-lacks the HMAC key. Portable signed checkpoints bind an enrolled producer to exact
-export bytes and a declared range, without sharing that key. An older intact
-snapshot remains valid: the receiver must retain continuity and high-water state.
+HMAC chaining and authenticated heads detect covered tampering without the key.
+[Signed checkpoints](evidence-checkpoints.md) bind an enrolled producer to exact
+export bytes and a declared range without sharing that key. Intact old snapshots
+can verify; receivers must retain continuity/high-water state.
 
-Receipts describe observed outcomes. API acceptance does not prove a deployment
-succeeded; a charged attempt does not prove a write occurred. Signatures do not
-prove an honest producer, independent custody or globally complete history. See
-[evidence checkpoints](evidence-checkpoints.md), including older-store migration.
+Receipts describe observations. A charged attempt does not prove a write; a
+signature proves neither an honest producer, independent custody nor globally
+complete history. Older stores require the linked explicit migration procedure.
 
 <a id="9-federation"></a>
 <a id="11-providers"></a>
