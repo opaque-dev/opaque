@@ -1,6 +1,8 @@
-# Policy (v1)
+# Configure operation policy
 
-Opaque uses a deny-by-default allowlist policy enforced by the daemon (`opaqued`) inside `Enclave::execute()`.
+The broker evaluates operation rules in order. Ordinary operations, tasks and MCP
+invocations add their applicable approval and dispatch checks; see
+[request contracts](architecture.md#what-approval-authorizes).
 
 Rules are evaluated in order; the **first matching rule wins**. If no rule matches, the request is denied.
 
@@ -34,7 +36,7 @@ Each entry matches when **all specified fields match**. Unspecified fields are t
 
 - `exe_path`: glob match on executable path
 - `exe_sha256`: exact SHA-256 hex digest
-- `codesign_team_id`: exact macOS Team ID
+- `codesign_team_id`: exact macOS Team ID; unavailable on other platforms
 
 Empty entries are rejected by the daemon (would match everything).
 
@@ -69,30 +71,18 @@ Note: `secret_names` enforcement depends on `secret_ref_names`, which the daemon
 ### Top-level settings and `opaque policy check`
 
 Daemon settings (`approval_backend`, `data_dir`, `require_seal`,
-`enforce_agent_sessions`, ...) must appear above the first `[[rules]]` table.
-TOML has no way back to the top level once a table starts, so a line appended
-to the end of a config becomes a key of the last rule's `[rules.approval]` table
-and is ignored. `opaque policy check` parses the raw file and warns about every
-key in a rule table that no policy field reads:
+`enforce_agent_sessions`, ...) belong above the first `[[rules]]` table.
+TOML cannot return to the top level after a table starts. Settings appended inside
+a rule table can therefore load while enforcing nothing.
 
-```text
-$ opaque policy check
-⚠  rules[6] ("allow-test-noop"): `approval_backend` is a daemon-level setting but sits inside [rules.approval], where it is ignored. TOML cannot return to the top level after a table: move the line above the first [[rules]] table.
-✔  policy OK: 7 rules loaded
+```sh
+opaque policy check
 ```
 
-Mistyped matcher keys load without error and enforce nothing, so they are
-reported the same way with the keys the table does accept:
-
-```text
-$ opaque policy check
-⚠  rules[0] ("allow-github-list-secrets"): unknown key `require` in [rules.workspace] is ignored. Known keys: remote_url_pattern, branch_pattern, require_clean.
-✔  policy OK: 1 rules loaded
-```
-
-The check still exits 0 in both cases: the config loads, and the warning names
-the line that does nothing. Only `[rules.client]` rejects unknown keys at load
-time. Generated preset headers repeat the placement rule.
+Read warnings for misplaced settings, unknown matcher keys and platform-specific
+identity fields. The check can exit **0** while warning that a setting is ignored;
+a successful parse does not prove that every key applies. Only `[rules.client]`
+rejects unknown keys at load time.
 
 ### Approval Configuration
 
@@ -120,8 +110,7 @@ fresh approval; it never restores them silently. Lease introspection includes
 the budget, spent attempts and remaining uses.
 
 `one_time = true` permits only the approving attempt, even if a larger budget is
-configured. This corrects the earlier behavior that allowed an extra reuse.
-Without `budget` or `one_time`, existing unlimited reuse within the TTL remains.
+configured. Without `budget` or `one_time`, existing unlimited reuse within the TTL remains.
 Leases bind the operation, parameters, targets, secret references and verified
 principal/delegation. Co-resident processes sharing those identities share that
 allowance; a count does not establish independent agent identities.
@@ -136,12 +125,11 @@ Approval factors (any-of):
   ships as desktop-to-desktop pairing, not an iOS app (`opaque device
   pair` / `ls` / `confirm` / `revoke`)
 
-## Example Policy File
+## Example policy file
 
-This is a minimal, working config that:
-
-1. Allows `github.set_actions_secret` for a repo prefix, with first-use approval + 5 minute lease
-2. Allows `sandbox.exec` with approval every time
+This configuration allows agent secret publication to a repository prefix after
+first-use approval, and requires approval for every sandbox request. Add the
+credential/profile and native approval prerequisites before running either.
 
 ```toml
 audit_retention_days = 90
@@ -177,4 +165,5 @@ factors = ["local_bio"]
 
 For more examples, see `examples/policy.toml`.
 
-Tip: to allow all GitHub secret-setting operations, use an `operation_pattern` like `github.set_*_secret` (or `github.*`) and constrain targets (`repo`, `org`) as needed.
+Inspect the effective rule order with `opaque policy show`; constrain targets
+for each operation rather than treating a provider-wide glob as a complete policy.

@@ -1,106 +1,116 @@
-# Web dashboard (`opaque-web`)
+# Inspect a local broker in the dashboard
 
-A read-only localhost dashboard for bounded tasks, provider receipts, audit events, policy files, and agent sessions. It binds only to `127.0.0.1`.
+`opaque-web` provides read-only task receipts, audit, policy, sessions and operation
+availability. Public core v0.6.0 includes it on macOS and Linux. It binds only to
+`127.0.0.1`; start the selected broker separately.
 
-## Run against an isolated installation
+```sh
+opaque-web --data-dir /tmp/opaque-example --open
+```
 
-```bash
-cargo build -p opaque-web
+This example requires an existing isolated installation at that path. The default
+URL is `http://127.0.0.1:7380`. The dashboard cannot create the daemon, change
+policy, approve work or dispatch writes. **Check workflow** refreshes evidence
+through a provider read. Use the CLI/agent and trusted reviewer to execute tasks.
 
-# Matches a daemon configured with this data directory and run/opaqued.sock.
-# This does not read or write ~/.opaque.
-./target/debug/opaque-web --data-dir /tmp/opaque-example --open
+## Select inputs and unlock
 
-# Override individual inputs when your daemon uses other paths.
-./target/debug/opaque-web \
-  --data-dir /tmp/opaque-example \
+`--data-dir DIR` selects `DIR/config.toml`, `DIR/audit.db`, `DIR/web.token` and
+`DIR/run/opaqued.sock`; explicit `--config` and `--socket` override those paths.
+Without it, `~/.opaque` defaults and `OPAQUE_CONFIG` / `OPAQUE_SOCK` apply.
+An explicit isolated directory ignores those environment overrides.
+
+```sh
+opaque-web --data-dir /tmp/opaque-example \
   --config /tmp/opaque-example/config.toml \
-  --socket /tmp/opaque-example/run/opaqued.sock \
-  --port 8080
+  --socket /tmp/opaque-example/run/opaqued.sock --port 8080
 ```
 
-The default URL is `http://127.0.0.1:7380`. Start the daemon separately with matching paths. The dashboard does not create a daemon, change policy, approve work, or execute writes. Task approval uses the trusted local or paired workstation approver; execution uses the CLI or agent tools. The dashboard can refresh correlated workflow evidence without dispatching work.
+The page starts **LOCKED**. Read the selected directory's `web.token` (`0600`),
+enter **Owner token**, and select **Unlock dashboard**. The bearer stays in page
+memory/request headers, never URLs or browser storage. All `/api/*` routes,
+including streaming and reconciliation, require it.
 
-`--data-dir DIR` selects `DIR/config.toml`, `DIR/audit.db`, `DIR/web.token`, and `DIR/run/opaqued.sock`. Explicit `--config` and `--socket` take precedence. Without `--data-dir`, the existing `~/.opaque` defaults and `OPAQUE_CONFIG` / `OPAQUE_SOCK` overrides apply. An isolated data directory deliberately ignores those environment overrides.
+**Lock dashboard** clears private views, receipts, token, stream cursor and timers,
+and cancels outstanding requests. Reload, another tab and browser-history
+restoration require unlock again. A server restart rotates the token. Locking a
+page cannot revoke a token copied elsewhere; owner-account processes, root and
+privileged browser extensions remain outside this boundary.
 
-## Unlock and lock
+Host/Origin validation accepts only localhost/127.0.0.1 at the bound port.
+Responses disable caching and framing; no cross-origin access is granted. The
+page itself is static and credential-free. Daemon authorization governs task
+visibility; there is no direct task-database read or generic RPC proxy.
 
-The page opens **LOCKED**. Read the token from the selected data directory's
-`web.token` file, enter it in **Owner token**, then select **Unlock dashboard**.
-The file is owner-readable (`0600`); the URL and page source contain no bearer.
-Demo mode uses the same unlock flow with its isolated token file.
+## Read connection state
 
-The token stays in this page's memory and authenticated request headers. It is
-never saved in browser storage. **Lock dashboard** clears the token, displayed
-private data, cached receipts, stream cursor and timers, and cancels outstanding
-requests. Reloading or opening another tab requires token entry again. A browser
-history restoration also returns to the locked state. A dashboard restart rotates
-the token: read the new file and unlock again.
+| State | Meaning |
+| --- | --- |
+| **LIVE** | Daemon health check answered; individual data sources can still fail |
+| **TEST APPROVAL** | Live broker uses insecure auto-approval or workstation test mode; the banner identifies its socket |
+| **DISCONNECTED** | Broker unavailable; readable persisted audit/policy can remain visible, tasks/sessions report errors |
+| **ERROR** | Web API unavailable; an authentication rejection locks the page |
+| **DEMO** | Explicit synthetic examples; no daemon connection or live task receipts |
 
-Locking this page does not revoke a token copied elsewhere. The owner, other
-processes running as the owner, root and privileged browser extensions remain
-outside this file-possession boundary.
-
-## Appearance and keyboard navigation
-
-The dashboard shares the website's warm charcoal and paper colors, amber accent,
-redaction mark, and Archivo / IBM Plex Mono typography. Fonts are served locally;
-the page does not need a font CDN. It opens in the dark appearance. Select
-**Paper theme** to switch, or **Dark theme** to return. The choice stays in this
-page's memory and resets on reload; it does not change authentication.
-
-Navigation sits beside the content on wide screens and becomes a horizontal tab
-bar on narrow screens. Focus a tab and use the arrow keys to move between views;
-**Home** selects Tasks and **End** selects Operations. In Audit, press **Enter** in a
-filter field or select **Apply filters** to apply the query. Audit rows are
-keyboard-accessible disclosure buttons: **Enter** or **Space** expands or closes
-their evidence. New events preserve the focused row when it remains in the view.
-**Clear view** clears only the displayed audit events; it does not delete the
-audit database or stop new events from arriving.
-
-## Connection and demo states
-
-- **LIVE:** the selected daemon answered a version/health check. An insecure auto-approval backend or workstation test mode adds a conspicuous **TEST APPROVAL** banner, even though the broker connection is live. The banner identifies its socket. Individual data sources can still report an error.
-- **DISCONNECTED:** the daemon is unavailable. Persisted audit history and readable policy remain inspectable. Sessions and tasks show an actionable error.
-- **ERROR:** the web API cannot be reached. An authentication rejection locks the dashboard; enter the current owner token to reconnect.
-- **DEMO:** enabled only by `--demo`. Synthetic audit, policy, and session examples are clearly marked, and the daemon is never contacted. Demo mode contains no live task receipts.
-
-```bash
-./target/debug/opaque-web --demo --data-dir /tmp/opaque-demo --port 7381 --open
+```sh
+opaque-web --demo --data-dir /tmp/opaque-demo --port 7381 --open
 ```
 
-The dashboard never turns missing data, daemon failures, or API authentication errors into synthetic activity. After successful unlock, it polls daemon status every ten seconds and resumes the audit stream after disconnections. Locked pages perform no protected reads or reconciliation.
+Demo mode uses its own unlock token. Missing or failed live data never turns into
+synthetic activity. Unlocked pages poll broker status and resume audit streaming
+after disconnection; locked pages perform no protected reads or reconciliation.
 
-The live operation catalog comes from the selected daemon's registry and configured handlers. Availability distinguishes enabled, disabled, and fixture-only operations. Approval labels describe defaults; policy permission is evaluated for each request. Demo catalog entries are synthetic, and a disconnected daemon cannot supply a live catalog. Audit catch-up drains bounded pages immediately and polls every 500 ms after reaching the tail; dashboard refreshes are coalesced and rendering is batched per animation frame.
+## Inspect the five views
 
-## Views
+| View | What to inspect | Limit |
+| --- | --- | --- |
+| **Tasks** (default) | Scoped, paginated manifests, approval times/digest and per-action receipts; use **Older receipts** / **Newest receipts** | No secret values; only tasks returned by the broker's `task_list` |
+| **Audit** | Read-only SQLite filters and resumable sequence stream | Pause buffers up to 200 events; **Clear view** clears display only |
+| **Policy** | Selected configuration and seal-file presence | Presence is labelled unverified; it does not prove active policy or a valid seal |
+| **Sessions** | Visible IDs, labels and expiry | No session tokens |
+| **Operations** | Broker registry/handlers with enabled, disabled or fixture-only availability | Catalog membership and default approval do not grant request permission |
 
-**Tasks** is the default. Large histories are paginated; use **Older receipts** and **Newest receipts** to move between pages. It lists only the tasks returned by the daemon's scoped `task_list` API. Expand a task to inspect its manifest digest, creation/expiry/approval times, each exact repository and secret name, pinned source references, and per-slot receipt. No secret values are displayed. Each approved task records its own **Native approval**, **Paired workstation approval**, or **INSECURE TEST APPROVAL** provenance; switching the current daemon backend does not relabel historical test receipts. Legacy receipts without provenance say **Approval mode unavailable**. The view distinguishes:
+Approval provenance belongs to each receipt: native, paired workstation,
+insecure test, or unavailable for legacy records. Changing the current backend
+does not relabel historical test approvals.
 
-- Slots not started and writes in flight.
-- **API accepted:** GitHub accepted the write. This does not prove a deployment succeeded or verify the stored value.
-- **Rejected:** the broker has a terminal rejection receipt.
-- **Unknown:** a write may have happened; its allowance remains consumed and must not be silently retried.
+Task slots distinguish not-started, in-flight, rejected, API-accepted and unknown
+outcomes. **API accepted** does not verify the stored secret or deployment success.
+**Unknown** may include a provider effect; its allowance remains consumed.
 
-**Staging releases** display dispatch authority separately from workflow evidence. Expand the task to inspect its exact repository/workflow IDs, reviewed workflow SHA-256, commit, image repository/digest, and staging destination. **Dispatch recorded** and **Dispatch API accepted** describe the dispatch receipt. A separate panel shows pending, running, succeeded, failed, or ambiguous workflow observations, including the run ID, attempt, check time, and correlation source. **Check workflow** performs an owner-scoped provider read; it cannot approve, dispatch, or retry. Failed checks retain prior evidence with an error. Workflow success does not establish service health beyond the reviewed workflow's checks.
+### Staging-release evidence
 
-**Audit** queries the selected SQLite database read-only. Kind, operation, outcome, and full-text filters apply to the displayed events. New events stream over an authenticated fetch connection, which resumes with a sequence cursor after connection loss. Pause buffers up to 200 events; **Clear view** clears the local view only.
+Expand a release task to inspect repository/workflow IDs, reviewed workflow hash,
+commit, image digest and destination. Dispatch authority and receipt are separate
+from pending/running/succeeded/failed/ambiguous workflow observations, run ID,
+attempt, check time and correlation source.
 
-**Policy** displays the selected config file. A seal file's existence is labeled as “Seal file present (not verified)”; the dashboard does not claim cryptographic validation or that this file is the daemon's active policy.
+**Check workflow** is an owner-scoped provider read: no approval, dispatch or
+retry. Failed checks preserve earlier evidence with an error. Workflow success
+establishes no health beyond that workflow's checks. See [bounded work](bounded-work.md).
 
-**Sessions** lists the daemon's visible session IDs, labels, and expiration times. Session tokens are not returned. **Operations** shows the selected daemon's actual operation catalog, including enabled, disabled and fixture-only availability. Demo entries are explicitly synthetic. Catalog membership and default approval labels do not grant permission to execute an operation.
+### Tenant inference receipts
 
-Organization fleet views are composed by a separately packaged management
-console. The local dashboard contains five views and has no collector credential
-or `/api/fleet` route. See [dashboard composition](reusable-core.md#compose-a-dashboard).
+A dashboard started inside a delegated agent wrapper may inherit
+`OPAQUE_SESSION_TOKEN`. It captures that token at startup for daemon handshakes;
+HTTP callers cannot replace it. The broker resolves current principal/tenant on
+each task request. Restart the dashboard after renewing delegation.
 
-## Security
+Schema 3 receipts show tenant/broker, fixed public source, model, reserved/observed
+tokens and bounded model output as plain text. Reservation consumes the allowance;
+observed usage does not refill it. Completion evidence proves neither GPU time,
+server cancellation nor hardware isolation.
 
-Every `/api/*` route, including the audit stream, requires `Authorization: Bearer <token>`. The served page is static and credential-free. The owner supplies the per-launch token through the unlock form; the page uses it only in request headers, never query strings or browser storage. API clients may read `DIR/web.token`, created atomically with `0600` permissions. Do not log or share this token.
+Organization fleet views belong to a separate management console; core has no
+collector credential or `/api/fleet`. See [dashboard composition](reusable-core.md#compose-a-dashboard).
 
-Host and Origin validation accepts only `127.0.0.1` or `localhost` at the actual bound port. There is no cross-origin access grant. Responses use `Cache-Control: no-store`, a same-origin connection policy, and frame blocking. A browser refresh clears local authentication and requires explicit unlock.
+## Keyboard controls
 
-This is a local read-only client of the existing daemon trust model. The daemon enforces task visibility and authorization; the dashboard does not bypass it by reading a task database or exposing a generic RPC proxy.
+Use arrow keys on view tabs; **Home** selects Tasks, **End** Operations. In Audit,
+**Enter** applies a filter; **Enter/Space** expands an event. New events retain
+focus where possible. **Paper theme** / **Dark theme** switch appearance in page
+memory; reload resets the choice. Navigation becomes a horizontal tab bar on
+narrow screens.
 
 ## API routes
 
@@ -119,17 +129,14 @@ This is a local read-only client of the existing daemon trust model. The daemon 
 
 Unavailable data returns an explicit non-2xx JSON error. Status returns the disconnected state as a successful health response so the page can explain it. Demo responses always carry `mode: "demo"`.
 
-## Verification
+## Verify dashboard behavior
 
-```bash
+```sh
 cargo test -p opaque-web
 node --test crates/opaque-web/tests/dashboard.test.cjs
 ```
 
-The tests exercise the real router, bearer protection on all API routes and the stream, configurable-port Origin/Host validation, credential-free HTML, explicit unlock/lock and stale-response suppression, disconnected and explicit-demo behavior, isolated path resolution, live SQLite query/stream resumption, daemon IPC response shapes for sessions and tasks, reconciliation authentication and method isolation, and dispatch/workflow wording with preserved approval provenance.
-
-### Tenant inference receipts
-
-A dashboard launched inside a delegated agent wrapper can inherit `OPAQUE_SESSION_TOKEN`. The token is captured at process startup and presented only in the daemon handshake; HTTP callers cannot replace it. The daemon resolves its principal and tenant on every task request. Renewing the wrapper delegation requires restarting that dashboard process.
-
-Schema 3 receipts show the tenant and broker binding, fixed public source snapshot, model identity, reserved and observed token counts, and bounded model output as plain text. The three-request allowance is charged by reservation, never by observed usage. Provider completion evidence does not establish GPU time, server cancellation, or hardware isolation.
+The source tests cover bearer/Origin protection, unlock/lock and stale-response
+handling, explicit demo/disconnection states, input paths, audit stream resumption,
+scoped task/session IPC and reconciliation without dispatch. These are test
+evidence; qualify the selected deployment separately.

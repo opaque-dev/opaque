@@ -1,20 +1,14 @@
 # FIPS 140-3 feasibility assessment
 
-Written 2026-09-14. This is the record of a feasibility spike: a full
-inventory of cryptography in the workspace, a classification of each usage
-against the aws-lc-rs migration path, and the results of two time-boxed build
-attempts (the aws-lc-rs provider swap, then the FIPS build). All spike
-changes were reverted; the default build is untouched. The known Rust path to
-FIPS 140-3 validated crypto is the aws-lc-rs provider for rustls, where
-aws-lc-fips-sys carries the CMVP validation.
+Recorded **2026-09-14**. This page preserves a cryptography inventory and
+compile-only migration experiments. It does not describe a released FIPS variant
+or validated product build. Recheck the inventory against the selected revision
+and module certificate before making a deployment claim.
 
-Bottom line: the TLS layer swaps to aws-lc-rs with a one-line feature change
-plus seven mechanical source lines, and the FIPS build (aws-lc-fips-sys
-0.14.2) compiles the entire workspace green on the first attempt. The real
-migration cost is not TLS; it is the direct RustCrypto usage (ed25519-dalek,
-sha2, hmac, p256) that signs identities, chains the audit log, and verifies
-approvals, plus two usages with no FIPS path (GitHub sealed boxes, the
-ssh-key crate backend).
+The recorded rustls provider swap and FIPS-feature build compiled after the
+specified changes; all changes were reverted. No FIPS runtime handshake or test
+suite was run. Direct signing, hashing, key generation, GitHub sealed boxes and
+SSH signing still require migration or a defined module boundary.
 
 ## Classification key
 
@@ -247,67 +241,31 @@ convenience, not a validated OE. Deployment claims should name the module
 certificate and its listed environments (Linux x86_64/aarch64 are the
 relevant ones for the daemon).
 
-## Migration plan, ordered by effort
+## Remaining migration work
 
-1. Delete the unused direct `ring` dependency from
-   `crates/opaqued/Cargo.toml:43`. Minutes.
-2. Provider swap: workspace feature `ring` to `aws-lc-rs` plus the seven
-   call sites, exactly as in attempt 2. Hours, already proven green.
-3. rcgen backend: switch the workspace rcgen declaration to its
-   `aws_lc_rs` feature so approval-server certificate generation uses the
-   same stack. Hours.
-4. Graph trim: reqwest to `rustls-tls-no-provider` (both the 0.12
-   declaration and the jsonschema-pulled 0.13), tokio-rustls to
-   `default-features = false` with explicit features, then verify
-   `cargo tree | grep ring` is empty. A day including verification, because
-   reqwest then depends on the process-default provider being installed
-   before any client is built, which needs an ordering audit around
-   `crates/opaqued/src/main.rs:759`.
-5. FIPS build variant: a `fips` cargo feature on opaqued (and the other
-   binaries) forwarding to `rustls/fips`, default off, plus a startup
-   assertion (`aws_lc_rs::try_fips_mode()`) so a FIPS-built daemon refuses
-   to run outside FIPS mode silently. A day with tests.
-6. sha2 and hmac migration to `aws_lc_rs::digest` / `aws_lc_rs::hmac`.
-   Mechanical but touches roughly a dozen files across five crates; the
-   audit-chain and seal code (`crates/opaque-core/src/audit.rs`,
-   `seal.rs`) needs golden-value tests proving identical output before and
-   after. Days.
-7. p256 WebAuthn verification to aws-lc-rs ECDSA P-256
-   (`crates/opaque-approval/src/fido2.rs`). A day with the existing FIDO2
-   test vectors.
-8. ed25519-dalek migration to aws-lc-rs Ed25519 across seven crates,
-   preserving the 32-byte seed storage format and moving keygen onto the
-   module DRBG. The widest item; existing signatures and stored keys must
-   verify unchanged. A week-scale item with compatibility tests.
-9. ssh-key backend decision (class c): custom signer plumbing, upstream
-   contribution, or documented deviation. Unbounded until scoped.
-10. GitHub sealed-box documentation (class c): a paragraph in the control
-    mapping scoping it outside the module boundary, plus a config switch to
-    disable the feature for deployments that require it. Hours.
+These are proposals, not implemented release capabilities. The inventory above
+identifies the applicable call sites.
 
-Items 1 through 5 produce a credible "FIPS-capable TLS" story. Items 6
-through 8 are what makes the product's own security claims (audit chain,
-approvals, identity) run on validated crypto, and they are where the real
-effort lives.
+| Work | Required check |
+| --- | --- |
+| Remove unused `ring`; select aws-lc-rs in rustls and rcgen | Runtime provider selection, including certificate generation |
+| Trim additive dependency features | Both reqwest versions and tokio-rustls use the selected process provider; inspect the resolved graph |
+| Add an explicit FIPS build variant | Fail closed outside FIPS mode; qualify handshake and approval flows |
+| Migrate SHA-256/HMAC and P-256 verification | Preserve audit/seal outputs and verify existing FIDO2 vectors |
+| Migrate Ed25519 signing and key generation | Preserve seed/key formats and old signatures; use the module DRBG and verify the matching certificate's approved algorithms |
+| Resolve SSH signing and GitHub sealed boxes | Implement a suitable backend or explicitly scope/redesign the affected operation |
 
-## CI implications
+A TLS provider swap alone does not move Opaque's audit, identity and approval
+cryptography into a validated module boundary.
 
-The FIPS build is a build variant, not the default. The default build stays
-on the current stack until the migration lands; nothing in this assessment
-changes the shipped artifacts.
+## Requirements for a future release variant
 
-- A `fips` variant job needs cmake, go, and perl on the runner.
-  ubuntu-latest images carry all three; pin and print their versions in the
-  job so CMVP-relevant toolchain drift is visible in logs.
-- The aws-lc-fips-sys cold build adds several minutes of CMake and Go
-  compilation; cache the cargo build directory keyed on the aws-lc-fips-sys
-  version.
-- macOS FIPS-variant jobs additionally need libclang for bindgen. Linux
-  x86_64/aarch64 use pregenerated bindings and do not.
-- The variant job should run `cargo check --workspace --all-targets
-  --features fips` at minimum, and the live-daemon handshake test once item
-  5 of the migration plan exists.
-- Release artifacts for the FIPS variant are a separate matrix entry with
-  distinct names; a FIPS binary and a default binary must never be
-  interchangeable in the release pipeline, because the claim attaches to
-  the artifact.
+An implemented variant would need pinned module/toolchain versions, supported
+operating environments, runtime checks and tests beyond `cargo check`. The
+recorded toolchain requirements above are experiment evidence, not qualification
+of another runner. Publish distinct artifact names and verification evidence so
+a default binary cannot be mistaken for the variant.
+
+Nothing in this assessment changes shipped artifacts. Use
+[certification status](certification-roadmap.md) and
+[release verification](verifying-releases.md) for current public evidence.

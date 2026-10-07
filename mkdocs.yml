@@ -1,5 +1,5 @@
 site_name: Opaque
-site_description: Opaque runs sensitive operations for coding agents with policy, required human approval, broker-held credentials, and recorded outcomes.
+site_description: Gate and audit AI agents at scale with Opaque. Define permitted operations, require human approval, and inspect recorded decisions and outcomes.
 site_url: https://opaque.info/
 repo_url: https://github.com/opaque-dev/opaque
 repo_name: opaque-dev/opaque
@@ -86,61 +86,62 @@ copyright: 'Copyright &copy; 2026 Patrick Deutsch · Documentation: <a href="htt
 nav:
   - Home: index.md
   - Start Here:
-      - First Operation: tutorial.md
+      - First Gated Operation: tutorial.md
       - Install and Commands: getting-started.md
+      - Hosted Demo: hosted-demo.md
       - Installable Releases: installable-releases.md
       - Licensing: licensing.md
-      - Hosted Demo: hosted-demo.md
   - Architecture:
-      - Boundaries and Evidence: architecture.md
-      - Deployment: deployment.md
-      - Evidence Verification: evidence-checkpoints.md
-      - Scope Evidence: scope-evidence.md
+      - Deployment Patterns: enterprise-architecture.md
+      - Request Paths and Boundaries: architecture.md
+      - Broker Custody: deployment.md
+      - Workload Identity: workload-attestation.md
+      - Policy Across Brokers: federation.md
+      - Building on Core: reusable-core.md
+  - Workflows:
       - Bounded Tasks: bounded-work.md
-      - Workload Attestation: workload-attestation.md
-  - Evaluate:
-      - Evaluation Guide: evaluation-guide.md
-      - Control Mapping: compliance/control-mapping.md
-      - Hardening Guide: compliance/hardening.md
-      - FIPS Assessment: compliance/fips-assessment.md
-      - Verifying Releases: compliance/verifying-releases.md
-      - Certification Roadmap: compliance/certification-roadmap.md
+      - Scoped Authority: scoped-authority.md
+      - Connect an Agent: llm-harness.md
+      - MCP Setup: mcp-integration.md
+      - Qualify an MCP Tool: mcp-qualified-tools.md
+      - Workstation Review: remote-approvals.md
+      - GitHub and CI Inference: github-ci-inference.md
+      - SSH Service Health: ssh-health.md
   - Reference:
       - Configuration:
-          - Policy: policy.md
-          - Identity: identity.md
-          - Operations: operations.md
-          - Storage: storage.md
-          - Federation: federation.md
-      - Integrations:
+          - Operation Policy: policy.md
+          - Identity and Delegation: identity.md
+          - Operation Contracts: operations.md
+          - Authority Policy Manifests: authority-policy.md
+          - Storage and Recovery: storage.md
+      - Inspection and Verification:
+          - Verify a Deployment: evaluation-guide.md
+          - Evidence Checkpoints: evidence-checkpoints.md
+          - Audit Query and Export: audit-analytics.md
+          - Local Dashboard: web-dashboard.md
+          - Scope Evidence: scope-evidence.md
+          - Reproduce Scope Recovery: scope-recovery.md
+          - Uncertain Writes: uncertain-agent-writes.md
+      - Credential Integrations:
           - AWS: aws.md
           - Azure: azure.md
           - Google Cloud: gcp.md
           - GitHub Secret Inventory: github-secret-inventory.md
-          - GitHub and CI Inference: github-ci-inference.md
-          - SSH Service Health: ssh-health.md
-          - MCP: mcp-integration.md
-          - Qualifying MCP Tools: mcp-qualified-tools.md
           - Bitwarden: bitwarden.md
           - HashiCorp Vault: vault.md
-          - LLM Harness: llm-harness.md
-      - Approvals:
+      - Approval Reference:
           - Linux polkit: linux-polkit.md
-          - Mobile Approvals: mobile-approvals.md
-          - Workstation Review: remote-approvals.md
-      - Tools and Extensions:
-          - Web Dashboard: web-dashboard.md
-          - Audit Analytics: audit-analytics.md
-          - Building on the Core: reusable-core.md
-          - Scoped Authority Workflow: scoped-authority.md
-          - Reproduce Scope Recovery: scope-recovery.md
-          - Why Uncertain Writes Stay Charged: uncertain-agent-writes.md
-          - Authority Policy Manifests: authority-policy.md
-          - Coverage and Assertions: testing-coverage.md
-          - Organization Architecture: enterprise-architecture.md
-          - Recordings: demos.md
+          - Second-Device Status: mobile-approvals.md
+      - Assessment Material:
+          - Hardening Configuration: compliance/hardening.md
+          - Release Verification: compliance/verifying-releases.md
+          - Control Mapping: compliance/control-mapping.md
+          - Certification Status: compliance/certification-roadmap.md
+          - FIPS Feasibility Record: compliance/fips-assessment.md
+          - Coverage Gate: testing-coverage.md
       - Background:
           - Historical Assessment (February 12): security-assessment.md
           - Historical Review (February 14): adversarial-security-review-2026-02-14.md
           - Deferred Work: roadmap-deferred.md
-          - Why We Built Opaque: blog/why-we-built-opaque.md
+          - Why Broker Agent Authority: blog/why-we-built-opaque.md
+          - Recordings: demos.md

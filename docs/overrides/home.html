@@ -2,7 +2,6 @@
 
 {% block extrahead %}
   {{ super() }}
-  <link rel="stylesheet" href="{{ 'stylesheets/task-illustration.css' | url }}">
   <style>
     /* Keep Material's mobile drawer while collapsing the empty article area. */
     .md-main {
@@ -25,220 +24,86 @@
   {{ super() }}
   <div class="op-home">
 
-    <!-- Hero -->
-    <section class="op-hero" id="op-hero">
+    <!-- Purpose: identify the product and show one real gated workflow. -->
+    <section class="op-hero" id="op-hero" aria-labelledby="opaque">
       <div class="op-wrap op-hero__grid">
         <div class="op-hero__copy">
-          <p class="op-eyebrow"><span class="op-brand-glyph" aria-hidden="true"></span> Operations for coding agents</p>
-          <h1 id="opaque">
-            Approve the work.<br>
-            Keep secrets <span class="op-redacted">secret</span>.
-          </h1>
+          <p class="op-eyebrow"><span class="op-brand-glyph" aria-hidden="true"></span> Agent security</p>
+          <h1 id="opaque">Gate and audit<br>agents at scale.</h1>
           <p class="op-hero__lede">
-            Give coding agents a reviewed task with a fixed scope and expiry.
-            Opaque checks authority before dispatch and keeps credentials with the broker.
+            Opaque gives platform and security teams control over AI agent actions.
+            Define permitted operations, require human approval, and record what happened.
           </p>
           <div class="op-actions">
-            <a class="op-btn op-btn--solid" href="https://demo.opaque.info/">Try it out</a>
-            <a class="op-text-link" href="{{ 'architecture/' | url }}">Architecture &rarr;</a>
-          </div>
-          <p class="op-meta">Local &middot; macOS and Linux &middot;
-            <a href="{{ 'getting-started/' | url }}">Installation and release status</a></p>
-        </div>
-        <figure id="task-illustration" class="op-task-scene" data-case="allowed" data-phase="result" data-consumed="true" aria-labelledby="op-task-title">
-          <figcaption class="op-task-heading">
-            <span id="op-task-title">One task. Finite authority.</span>
-          </figcaption>
-          <div class="op-task-cases" role="group" aria-label="Choose a task scenario" hidden>
-            <button type="button" data-case="allowed" aria-pressed="true">Approved</button>
-            <button type="button" data-case="changed" aria-pressed="false">Change task</button>
-            <button type="button" data-case="production" aria-pressed="false">Production</button>
-            <button type="button" data-case="retry" aria-pressed="false">Retry</button>
-          </div>
-          <div class="op-flow" aria-hidden="true">
-            <div class="op-flow-map">
-              <svg class="op-flow-wires op-flow-wires--wide" viewBox="0 0 1000 330" preserveAspectRatio="none">
-                <defs><marker id="op-flow-arrow-wide" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M1 1l4 2.5L1 6" fill="none" stroke="var(--op-text-dim)" stroke-width="1"/></marker></defs>
-                <g class="op-flow-route" data-flow="request" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-wide)" d="M270 154H370" pathLength="1"/><path class="op-flow-trace" d="M270 154H370" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="review" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-wide)" d="M510 64V84" pathLength="1"/><path class="op-flow-trace" d="M510 64V84" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="dispatch" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-wide)" d="M650 154H750" pathLength="1"/><path class="op-flow-trace" d="M650 154H750" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="response" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-wide)" d="M855 198V278Q855 292 841 292H574Q560 292 560 278V260" pathLength="1"/><path class="op-flow-trace" d="M855 198V278Q855 292 841 292H574Q560 292 560 278V260" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="status" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-wide)" d="M430 260V278Q430 292 416 292H169Q155 292 155 278V198" pathLength="1"/><path class="op-flow-trace" d="M430 260V278Q430 292 416 292H169Q155 292 155 278V198" pathLength="1"/></g>
-              </svg>
-              <svg class="op-flow-wires op-flow-wires--narrow" viewBox="0 0 1000 470" preserveAspectRatio="none">
-                <defs><marker id="op-flow-arrow-narrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M1 1l4 2.5L1 6" fill="none" stroke="var(--op-text-dim)" stroke-width="1"/></marker></defs>
-                <g class="op-flow-route" data-flow="request" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-narrow)" d="M260 92V112Q260 124 272 124H418Q430 124 430 136V140" pathLength="1"/><path class="op-flow-trace" d="M260 92V112Q260 124 272 124H418Q430 124 430 136V140" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="review" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-narrow)" d="M750 92V112Q750 124 738 124H582Q570 124 570 136V140" pathLength="1"/><path class="op-flow-trace" d="M750 92V112Q750 124 738 124H582Q570 124 570 136V140" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="dispatch" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-narrow)" d="M500 322V374" pathLength="1"/><path class="op-flow-trace" d="M500 322V374" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="response" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-narrow)" d="M760 410H866Q890 410 890 398V254Q890 242 866 242H760" pathLength="1"/><path class="op-flow-trace" d="M760 410H866Q890 410 890 398V254Q890 242 866 242H760" pathLength="1"/></g>
-                <g class="op-flow-route" data-flow="status" data-state="complete"><path class="op-flow-wire" marker-end="url(#op-flow-arrow-narrow)" d="M240 242H134Q110 242 110 230V114Q110 102 86 102H60Q42 102 42 90V69Q42 57 60 57" pathLength="1"/><path class="op-flow-trace" d="M240 242H134Q110 242 110 230V114Q110 102 86 102H60Q42 102 42 90V69Q42 57 60 57" pathLength="1"/></g>
-              </svg>
-              <div class="op-flow-node op-flow-agent">
-                <span class="op-flow-node-title">Agent</span>
-                <span class="op-flow-agent-state">Task status received</span>
-              </div>
-              <div class="op-flow-node op-flow-review">
-                <span class="op-flow-node-title">Human review</span>
-                <span class="op-flow-review-state">Exact task approved</span>
-              </div>
-              <div class="op-flow-node op-flow-broker">
-                <div class="op-flow-broker-title"><span class="op-brand-glyph"></span><strong>Opaque</strong><span class="op-flow-status-dot"></span></div>
-                <div class="op-flow-checks"><span>Scope + authority</span><strong class="op-flow-decision">Checks passed</strong></div>
-                <div class="op-flow-allowance"><span>Attempts left</span><strong class="op-flow-digits"><span class="op-flow-budget-old">1</span><span class="op-flow-budget">0</span></strong><span class="op-flow-charge">Consumed</span></div>
-                <div class="op-flow-custody"><svg viewBox="0 0 16 16"><path d="M4 7V5a4 4 0 0 1 8 0v2 M3 7h10v8H3z"/></svg>Broker credentials</div>
-              </div>
-              <div class="op-flow-node op-flow-provider">
-                <span class="op-flow-node-title">Workflow</span>
-                <span class="op-flow-provider-state">Dispatch accepted</span>
-              </div>
-              <span class="op-flow-return-label op-flow-return-label--status">Task status</span>
-              <span class="op-flow-return-label op-flow-return-label--response">Provider response</span>
-            </div>
-            <div class="op-flow-scope"><span class="op-flow-scope-value">staging</span><span>1 attempt</span><span>10 min</span></div>
-          </div>
-          <div class="op-task-narration">
-            <div class="op-task-narration__top"><span class="op-task-step">06 / OBSERVE</span><strong class="op-task-state">Inspect the workflow result.</strong></div>
-            <p class="op-task-description">Dispatch acceptance does not prove deployment success. The task record preserves what was observed.</p>
-            <div class="op-task-controls" hidden>
-              <span class="op-task-timeline" aria-hidden="true"><i></i></span>
-              <button type="button" class="op-task-pause" aria-label="Pause task illustration">Pause</button>
-              <button type="button" class="op-task-replay" aria-label="Replay task illustration">Replay ↺</button>
-            </div>
-          </div>
-          <details class="op-task-inspector">
-            <summary>Inspect task scope <span aria-hidden="true">+</span></summary>
-          <div class="op-task-drawing">
-            <div class="op-task-actors">
-              <span class="op-task-agent"><span class="op-task-terminal">&gt;_</span> Agent request</span>
-              <span class="op-task-reviewer"><svg viewBox="0 0 20 20"><path d="M4 3h12v14H4z M7 7h6 M7 10h6 M7 13h3"/></svg> Human review</span>
-            </div>
-            <div class="op-task-paper">
-              <div class="op-task-paper__heading"><span>RELEASE / myorg/api</span><span class="op-task-seal">Approved</span></div>
-              <dl class="op-task-fields">
-                <div><dt>Workflow</dt><dd>staging.yml @ main</dd></div>
-                <div class="op-task-image"><dt>Image digest</dt><dd><span class="op-task-original">a1b2…9f0e</span><span class="op-task-proposed" hidden>b7c4…2d6a</span></dd></div>
-                <div class="op-task-destination"><dt>Destination</dt><dd><span class="op-task-original">staging</span><span class="op-task-proposed" hidden>production</span></dd></div>
-                <div><dt>Task lifetime</dt><dd>10 minutes</dd></div>
-              </dl>
-              <div class="op-task-binding"><svg viewBox="0 0 16 16"><path d="M4 7V5a4 4 0 0 1 8 0v2 M3 7h10v8H3z"/></svg><span>Approval bound to this task</span><span class="op-task-digest-note">Digests shortened</span></div>
-            </div>
-            <div class="op-task-wire op-task-wire--in"><i></i></div>
-            <div class="op-task-gate">
-              <div class="op-task-gate__heading"><span><span class="op-brand-glyph"></span> Opaque</span><span>DISPATCH GATE</span></div>
-              <div class="op-task-gate__body">
-                <dl class="op-task-checks">
-                  <div><dt>Scope</dt><dd data-check="scope">Matched</dd></div>
-                  <div><dt>Authority</dt><dd data-check="authority">Current</dd></div>
-                  <div><dt>Deadline</dt><dd data-check="deadline">Valid</dd></div>
-                </dl>
-                <div class="op-task-allowance"><span>Attempts left</span><strong><span class="op-task-one">1</span><span class="op-task-zero">0</span></strong><span class="op-task-charge">Consumed</span></div>
-              </div>
-              <div class="op-task-custody"><span class="op-task-lock">▰</span> Credentials remain with the broker</div>
-              <div class="op-task-retry" hidden>↳ Retry blocked · allowance consumed</div>
-            </div>
-            <div class="op-task-wire op-task-wire--out"><i></i><span class="op-task-wire-label">one dispatch</span></div>
-            <div class="op-task-result">
-              <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z M4 9h16 M8 13h3 M8 16h7"/></svg>
-              <div><span class="op-task-result__label">Staging workflow</span><strong class="op-task-result__state">Dispatch accepted</strong></div>
-              <span class="op-task-result__mark">↗</span>
-            </div>
-          </div>
-          </details>
-        </figure>
-      </div>
-    </section>
-
-    <section id="op-who" aria-labelledby="approve-one-staging-release">
-      <div class="op-wrap">
-        <div class="op-kicker">
-          <span id="publish-a-github-actions-secret" aria-hidden="true"></span>
-          <h2 id="approve-one-staging-release">Approve one staging release. Keep the scope fixed.</h2>
-          <p>Your agent requests a release of a specific build. Review the image, destination, and workflow. Opaque binds approval to that task, with an expiry and at most one dispatch attempt.</p>
-        </div>
-        <ol class="op-workflow">
-          <li>
-            <div class="op-workflow__copy">
-              <span class="op-step" aria-hidden="true">01</span>
-              <h3>Review the exact release.</h3>
-              <p>The planned task pins the repository, workflow, commit, and image digest for full review.</p>
-            </div>
-            <div>
-              <p class="op-scope-label">Illustrative scope · digest shortened</p>
-              <dl class="op-request" aria-label="Illustrated task scope, not an approval control">
-                <div><dt>Repository</dt><dd>myorg/api</dd></div>
-                <div><dt>Workflow</dt><dd>staging.yml @ main</dd></div>
-                <div><dt>Image</dt><dd>ghcr.io/myorg/api<br>sha256:a1b2…9f0e</dd></div>
-                <div><dt>Destination</dt><dd>staging</dd></div>
-                <div><dt>Allowance</dt><dd>1 attempt · expires in 10 min</dd></div>
-              </dl>
-            </div>
-          </li>
-          <li>
-            <div class="op-workflow__copy">
-              <span class="op-step" aria-hidden="true">02</span>
-              <h3>Keep approval within scope.</h3>
-              <p>Current policy, identity, expiry, and revocation must still permit dispatch. Approval does not grant broader access.</p>
-            </div>
-            <dl class="op-request" aria-label="Task limits">
-              <div><dt>Different build</dt><dd>New task and review</dd></div>
-              <div><dt>Production target</dt><dd>Outside this operation</dd></div>
-              <div><dt>Repeat attempt</dt><dd>Allowance consumed</dd></div>
-            </dl>
-          </li>
-          <li>
-            <div class="op-workflow__copy">
-              <span class="op-step" aria-hidden="true">03</span>
-              <h3>Inspect before retrying.</h3>
-              <p>A timeout can leave the result unknown. The attempt stays consumed; reconciliation reads evidence without dispatching again.</p>
-            </div>
-            <div class="op-example">
-              <div class="op-example__label">Inspect your task · replace &lt;task-id&gt;</div>
-              <pre><code>opaque task show &lt;task-id&gt;
-opaque task reconcile &lt;task-id&gt;</code></pre>
-            </div>
-          </li>
-        </ol>
-      </div>
-    </section>
-
-    <section id="op-boundary">
-      <div class="op-wrap op-detail">
-        <div>
-          <h2 id="set-the-permitted-scope">You set the permitted scope.</h2>
-          <p>Operators configure the allowed repository, workflow, branch, and image source.
-            Agent requests must fit that scope before approval can authorize an attempt.</p>
-          <a class="op-text-link" href="{{ 'bounded-work/' | url }}">Task setup, limits, and evidence &rarr;</a>
-        </div>
-        <div>
-          <h2 id="know-the-boundary">Know the boundary.</h2>
-          <p>A separate broker identity isolates custody from the agent's OS user.
-            The default same-user setup does not. Other agent access remains outside Opaque.</p>
-          <p>Workflow dispatch is not deployment success. The workflow and its credentials
-            also need review; these controls apply to work routed through Opaque.</p>
-          <a class="op-text-link" href="{{ 'architecture/' | url }}">Architecture, assumptions, and evidence &rarr;</a>
-        </div>
-      </div>
-    </section>
-
-    <section id="op-pilot">
-      <div class="op-wrap op-invitation">
-        <div>
-          <h2 id="start-with-one-task">Start with one task.</h2>
-          <p>Set up Opaque with the secret-write tutorial, or bring a staging workflow to a pilot conversation.</p>
-        </div>
-        <div>
-          <div class="op-actions">
-            <a class="op-btn op-btn--solid" href="https://demo.opaque.info/">Try it out</a>
+            <a class="op-btn op-btn--solid" href="https://demo.opaque.info/">Try the demo</a>
             <a class="op-text-link" href="{{ 'tutorial/' | url }}">Set up locally &rarr;</a>
           </div>
-          <p class="op-meta">The hosted demo uses fictional portfolio data and a separate workflow.
-            <a href="{{ 'hosted-demo/' | url }}">Demo guide</a> &middot;
-            <a href="{{ 'licensing/' | url }}">Code: Apache-2.0 · Docs: CC BY 4.0</a></p>
+          <p class="op-meta">Open-source core &middot; macOS and Linux &middot;
+            <a href="{{ 'getting-started/' | url }}">v0.6.0 and installation</a></p>
+          <p class="op-meta">Hosted demo uses fictional data.
+            <a href="{{ 'hosted-demo/' | url }}">Demo guide</a></p>
+        </div>
+        <div class="op-release" id="start-with-one-task">
+          <span id="publish-a-github-actions-secret" aria-hidden="true"></span>
+          <h2 id="approve-one-staging-release">A gated staging release</h2>
+          <p>Configure the release workflow and policy, then prepare a manifest.</p>
+          <div class="op-example">
+            <div class="op-example__label">Example commands &middot; replace &lt;task-id&gt;</div>
+            <pre><code>opaque task plan --manifest ./release.json
+opaque task run &lt;task-id&gt;
+opaque task show &lt;task-id&gt;</code></pre>
+          </div>
+          <p>Approval covers one build, one destination, and one dispatch attempt.
+            A timeout can leave the result unknown; the attempt stays consumed.
+            Dispatch acceptance is not deployment success.</p>
+          <a class="op-text-link" href="{{ 'bounded-work/' | url }}">Task setup and revocation &rarr;</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Purpose: explain the concrete controls, with configuration and evidence links. -->
+    <section id="op-who" aria-label="Agent security controls">
+      <div class="op-wrap">
+        <dl class="op-controls">
+          <div>
+            <dt id="set-the-permitted-scope">Gate access.</dt>
+            <dd>Deny by default. Limit operations by identity and target,
+              and require human approval before sensitive execution.</dd>
+            <dd><a class="op-text-link" href="{{ 'policy/' | url }}">Policy rules &rarr;</a></dd>
+          </div>
+          <div>
+            <dt id="bound-agent-work">Bound the work.</dt>
+            <dd>Give tasks an exact scope and expiry. Revoke future dispatches;
+              an approval cannot expand the reviewed task.</dd>
+            <dd><a class="op-text-link" href="{{ 'bounded-work/' | url }}">Task limits &rarr;</a></dd>
+          </div>
+          <div>
+            <dt id="audit-agent-actions">Audit actions.</dt>
+            <dd>Inspect decisions, approvals, and observed outcomes.
+              Verify exported audit ranges with independently held checkpoints.</dd>
+            <dd><a class="op-text-link" href="{{ 'evidence-checkpoints/' | url }}">Evidence verification &rarr;</a></dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <!-- Purpose: state scale availability and the required enforcement boundary. -->
+    <section id="op-boundary" aria-label="Deployment and availability">
+      <div class="op-wrap op-detail">
+        <div>
+          <h2 id="policy-across-brokers">Manage policy across brokers.</h2>
+          <p>Public core v0.6.0 includes signed policy distribution and SIEM export.
+            Fleet management is separate enterprise software.</p>
+          <a class="op-text-link" href="{{ 'federation/' | url }}">Signed policies and audit export &rarr;</a>
+        </div>
+        <div>
+          <h2 id="know-the-boundary">Protect the broker.</h2>
+          <p>Route agent actions through Opaque and run the broker under a separate OS identity.
+            Same-user installs do not isolate custody; direct agent access remains outside the gate.</p>
+          <a class="op-text-link" href="{{ 'architecture/' | url }}">Deployment boundaries and evidence &rarr;</a>
         </div>
       </div>
     </section>
 
   </div>
-
-  <script src="{{ 'javascripts/task-illustration.js' | url }}"></script>
 {% endblock %}

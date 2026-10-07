@@ -1,153 +1,72 @@
-# LLM Harness (v1): Use Secrets Without Disclosure
+# Route agent work through Opaque
 
-This doc defines how LLM tools (Codex, Claude Code, etc) should interact with Opaque so they can **use** secrets without ever receiving plaintext secret values.
+Connect an agent through MCP or the CLI, then let the broker enforce policy,
+required review and result disclosure. These interfaces are available in core
+v0.6.0. Provider credentials stay with the broker; agent-readable credentials
+outside that boundary remain usable independently.
 
-## The Rule
+## Connect and delegate
 
-LLMs get **operations**, not values.
+For an MCP client, register the installed adapter and confirm its tool list:
 
-- OK: "set GitHub Actions secret `JWT` for `org/repo` using ref `keychain:opaque/jwt`"
-- Not OK: "print the JWT" / "show me the `.env` file" / "return the secret value"
-
-## How The LLM Calls Opaque
-
-### MCP (Preferred for Claude Code)
-
-The recommended path for MCP-aware tools like Claude Code is the `opaque-mcp` server. It exposes Safe operations as MCP tools over stdio, so the LLM calls Opaque tools natively without shell access.
-
-See [MCP integration](mcp-integration.md) for setup.
-
-### CLI Harness (Fallback)
-
-For tools without MCP support (e.g., Codex), the agent runs `opaque ...` CLI commands directly:
-
-- the agent runs `opaque ...` commands
-- the daemon (`opaqued`) enforces policy, triggers approvals, executes the operation, sanitizes results, and emits audit events
-
-Both paths go through the same daemon and policy engine. The MCP server is a thin adapter over the same Unix socket IPC.
-
-### Bounded Tasks (Multi-Step Work)
-
-For more than one operation (publish a secret *and* dispatch its release,
-or run a fixed host check), plan a single [bounded task](bounded-work.md)
-instead of chaining calls: an immutable manifest, approved once, executed
-once, with a receipt. MCP (`opaque_task_plan`, `opaque_task_run`, …) and the
-CLI (`opaque task plan`, `opaque task run`, …) expose the same lifecycle.
-
-For stronger local isolation, launch the agent via wrapper mode:
-
-- `opaque agent run -- <agent-command ...>`
-
-By default, the agent wrapper starts the child process with a **clean environment** containing only a baseline set of variables (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, `LC_ALL`, `TMPDIR`, `XDG_RUNTIME_DIR`, `COLORTERM`, `SSH_AUTH_SOCK`) plus the `OPAQUE_*` session variables. This prevents secrets like `ANTHROPIC_API_KEY` or `DATABASE_URL` from leaking into the agent process.
-
-To pass additional environment variables selectively:
-
-```bash
-opaque agent run --pass-env EDITOR --pass-env VISUAL -- <agent-command ...>
+```sh
+opaque connect codex
 ```
 
-To inherit the full parent environment (opt-in):
+`opaque connect claude` and `opaque connect cursor` configure those clients.
+Follow [MCP setup](mcp-integration.md#setup) for paths, sessions and discovery.
+CLI commands reach the same broker through its Unix socket.
 
-```bash
-opaque agent run --inherit-env -- <agent-command ...>
+To launch an agent with a broker-managed session:
+
+```sh
+opaque agent run -- codex
+opaque agent list
+opaque agent end <session-id>
 ```
 
-This injects a session token used by Opaque handshakes. If `enforce_agent_sessions = true` is enabled in daemon config, non-session agent calls are rejected.
+With OIDC configured, the wrapper uses the verified human's delegation. Configure
+`enforce_agent_sessions = true` to reject non-session agent calls. A reduced child
+environment removes most inherited variables; it does not isolate files,
+`SSH_AUTH_SOCK`, another credential path or co-resident processes.
 
-The wrapper revokes its session after the child exits, fails to launch, or the
-wrapper handles SIGINT/SIGTERM. It preserves the child's exit code when cleanup
-succeeds; a failed or unacknowledged revocation exits nonzero. After an abrupt
-wrapper kill or a lost daemon connection, inspect `opaque agent list` and revoke
-any remaining session with `opaque agent end <session-id>`.
+Use `--pass-env KEY` for selected variables; `--inherit-env` passes the full parent
+environment. The wrapper revokes its session on ordinary exit, launch failure or
+handled interruption. Failed or unacknowledged revocation exits nonzero. After an
+abrupt kill or connection loss, inspect and end remaining sessions explicitly.
+Ctrl-C reaches the interactive agent; a signal sent directly to the wrapper
+cancels its process group, with five seconds for cleanup before forced termination.
 
-In an interactive terminal, Ctrl-C reaches the agent directly, so its own
-interrupt handler can exit or continue. Suspend and resume work through the
-invoking shell; the wrapper restores terminal settings when the agent stops or
-exits. A SIGINT or SIGTERM sent directly to the wrapper cancels the agent's
-process group, allowing five seconds to exit before forcing cleanup. Group
-cleanup also removes remaining members after the agent exits.
+See [identity and delegation](identity.md) and [broker custody](deployment.md).
 
-## Secret Inputs: Refs, Not Values
+## Choose the execution contract
 
-Operations accept **secret references** (refs), not raw values.
+| Work | Interface | Limit |
+| --- | --- | --- |
+| One registered operation | `opaque execute` or a built-in MCP tool | Prepared action and policy-specific approval; a first-use lease can cover repeated matching operations |
+| One immutable task | `opaque task plan`, `run`, `show` | Full-manifest review and one durable attempt per action; action families cannot be mixed |
+| A qualified third-party tool | Signed `opaque_mcp_tool_*` route | Pinned schema, bounded arguments, local full review and a separate durable attempt |
+| Finite delegated budget | `opaque scope` | Separate scope store, approval and executor; see [scoped authority](scoped-authority.md) |
 
-Examples:
+Changing reviewed work requires the applicable new review. Revocation blocks future
+dispatch at its final fence; it cannot recall an external effect. Inspect unknown
+outcomes before proposing replacement work. See [tasks](bounded-work.md) and
+[MCP qualification](mcp-qualified-tools.md).
 
-- `keychain:opaque/github-pat`
-- `env:MY_SECRET` (daemon reads from its own environment, not the agent's)
-- `profile:<name>:<key>` (profile indirection; recommended for agent workflows)
-- `bitwarden:<secret-id>` or `bitwarden:<project>/<key>` (Bitwarden Secrets Manager)
+## Credential inputs and outputs
 
-Opaque should reject raw secret literals for operations that write secrets to providers.
+Use configured references such as `keychain:opaque/github-pat`,
+`vault:secret/data/app#token` or `bitwarden:production/API_KEY`. Keep names and
+reference mappings in profiles; do not put plaintext in agent prompts or arguments.
+`env:` reads the broker's environment, not the agent's.
 
-## Profiles: Make Agent Workflows Safer
+Both `opaque exec` and `opaque_sandbox_exec` withhold stdout/stderr content and
+return status and byte lengths. A child still receives its profile's secrets;
+permitted egress and predictable output lengths can disclose information. Review
+the command and [sandbox prerequisites](deployment.md#sandbox-prerequisites).
+`REVEAL` operations are blocked for every client.
 
-Instead of giving the agent a pile of refs each run, keep them in a profile:
-
-```toml
-[secrets]
-GITHUB_TOKEN = "keychain:opaque/github-token"
-```
-
-Then the agent can request:
-
-- "run sandbox exec with profile `dev`"
-
-The CLI never sees the resolved secret values *directly*, but secrets can still leak if a sandboxed command prints them (see note under sandbox exec below).
-
-## Approvals
-
-Approvals are operation-bound, triggered as part of execution. An LLM tool
-call can request an operation but can't satisfy any factor itself: each
-completes on hardware or a channel the agent doesn't control.
-
-Implemented factors (see [Policy](policy.md#approval-configuration)):
-
-- `local_bio`: native OS prompt (macOS LocalAuthentication, Linux polkit)
-- `fido2`: hardware security key or passkey (FIDO2/WebAuthn)
-- `paired_workstation`: full-manifest review by an enrolled trusted
-  workstation; used for bounded task approval
-- `ios_faceid`: paired second-device approval (Ed25519). Despite the wire
-  name, this ships as desktop-to-desktop pairing, not an iOS app; see
-  [mobile approvals](mobile-approvals.md)
-
-## Handling Common Requests Safely
-
-### "Sync my .env to GitHub"
-
-Do not have the agent open a plaintext `.env` containing real values.
-
-Prefer:
-
-- `.env.example` (names only)
-- a profile mapping (names -> refs)
-- provider-side fetch via refs
-
-Then call:
-
-- `github.set_actions_secret(repo, secret_name, value_ref)` (repo or env Actions secrets)
-- `github.set_codespaces_secret(secret_name, value_ref, ...)`
-- `github.set_dependabot_secret(repo, secret_name, value_ref)`
-- `github.set_org_secret(org, secret_name, value_ref, ...)`
-
-CLI batching workflow (still routes through Opaque per secret):
-
-- `opaque github build-manifest --env-file .env.example --value-ref-template 'bitwarden:production/{name}' --out .opaque/env-manifest.json`
-- Review/update `.opaque/env-manifest.json` manually (refs only; no plaintext secrets).
-- `opaque github publish-manifest --repo <owner/repo> --manifest-file .opaque/env-manifest.json`
-- Use `--dry-run` on `publish-manifest` to preview without publishing.
-
-### "Run tests that need secrets"
-
-Do not paste secrets into prompts or run `printenv` to verify them.
-
-Use:
-
-- `opaque exec --profile <name> -- <command...>` (CLI), or
-- the `opaque_sandbox_exec` MCP tool (see [MCP integration](mcp-integration.md#sandbox))
-
-Opaque injects secrets into the sandboxed process environment, but the two
-paths differ downstream: the CLI prints raw stdout/stderr, so `opaque exec`
-can leak anything a command prints; treat it as `SENSITIVE_OUTPUT` and
-avoid commands that echo secrets. The MCP tool withholds output entirely,
-returning only exit code and byte lengths.
+Approval factors have operation-specific support. Native review, paired-workstation
+review and second-device factors are not interchangeable; a notification or catalog
+entry grants no authority. Follow the [approval configuration](policy.md#approval-configuration)
+for the selected path.
