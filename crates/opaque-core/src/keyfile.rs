@@ -81,8 +81,10 @@ fn write_key_file(path: &Path, key: &[u8; 32], nonce: u64) -> io::Result<()> {
         file.sync_all()?;
         std::fs::hard_link(&temporary, path)
     })();
-    let _ = std::fs::remove_file(&temporary);
+    let removed = std::fs::remove_file(&temporary);
     placed?;
+    // A leftover second name would leave the key with two links.
+    removed?;
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()
 }
