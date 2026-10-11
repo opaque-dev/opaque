@@ -9,6 +9,16 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+### Added
+
+- A Nix flake that packages `opaque`, `opaqued` and `opaque-mcp` for Linux,
+  a NixOS module that runs `opaqued` under the enforced trust-domain split
+  (mirroring `deploy/systemd`), and a two-VM NixOS test in CI. The broker
+  loses power while an MCP effect is in flight, and after the reboot the
+  invocation must read `unknown` with its attempt charged and must not be
+  replayed. The test uses the insecure approval backend and a loopback MCP
+  fixture; see `tests/README.md` for what it does not cover.
+
 ### Fixed
 
 - A scoped `github.workflow.dispatch` that GitHub accepted is recorded as

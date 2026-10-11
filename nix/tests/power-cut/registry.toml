@@ -1,0 +1,32 @@
+# Signed MCP registry for the power-cut machine test (synthetic route).
+# `opaque bundle sign --manifest` turns this into the broker's registry bundle.
+org = "machine-test"
+version = 1
+
+[mcp_registry]
+version = 1
+
+[[mcp_registry.routes]]
+alias = "post_note"
+server_id = "machine-test"
+tool = "post_note"
+credential_binding = "notes"
+output_policy = "withhold"
+max_request_bytes = 4096
+max_response_bytes = 4096
+# The maximum route timeout, so the power cut always lands first.
+timeout_ms = 120000
+
+[mcp_registry.routes.endpoint]
+host = "mcp.example.com"
+path = "/mcp"
+
+[mcp_registry.routes.input_schema]
+type = "object"
+additionalProperties = false
+required = ["message"]
+
+[mcp_registry.routes.input_schema.properties.message]
+type = "string"
+minLength = 1
+maxLength = 128

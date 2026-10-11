@@ -1,0 +1,29 @@
+# Test-only broker config: insecure auto-approval and a loopback MCP fixture
+# under the enforced trust-domain split. Never use this outside a test VM.
+# @TRUST_ANCHOR@ is replaced at first boot with the freshly generated org key.
+approval_backend = "insecure_auto_approve"
+data_dir = "/var/lib/opaque/state"
+
+[trust_domain]
+enforce = true
+socket_group = "opaque-clients"
+socket_path = "/run/opaque/opaqued.sock"
+
+[mcp]
+bundle_path = "/var/lib/opaque/state/registry.bundle"
+org = "machine-test"
+trust_anchors = ["@TRUST_ANCHOR@"]
+fixture_origin = "http://127.0.0.1:18080"
+
+[mcp.credentials]
+notes = "/var/lib/opaque/state/notes-token"
+
+[[rules]]
+name = "machine-test-mcp"
+operation_pattern = "mcp.call"
+allow = true
+client_types = ["agent", "human"]
+
+[rules.approval]
+require = "always"
+factors = ["local_bio"]
