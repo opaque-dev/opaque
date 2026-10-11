@@ -29,6 +29,43 @@ network isolation. The signed OIDC issuer, scripted reviewer and HTTP inference
 responses are explicit test implementations. They test the production protocols;
 actual model completions and native human approval remain separate qualifications.
 
+## Broker power cut across two machines
+
+A NixOS test boots two VMs. `workstation` runs `opaqued` from the
+[NixOS module](../nix/module.nix) under the enforced trust-domain split, with
+an `agent` account in the client group and an `outsider` account outside it.
+`provider` runs a synthetic MCP upstream that durably records each effect
+before answering:
+
+```sh
+nix build -L .#checks.x86_64-linux.power-cut
+```
+
+Background writeback is disabled on `workstation`
+(`vm.dirty_writeback_centisecs = 0`), so after the power cut only data that
+something fsynced survives, however long the VM ran first. The test checks
+the client-group socket surface and custody file modes, then
+runs one completed MCP call as a positive control. A second call is held at the
+provider after its effect is recorded, and the workstation loses power
+(`crash()`: no shutdown, so unwritten guest page cache is lost, unlike
+SIGKILL). After the reboot, the held call's receipt must read `unknown` /
+`interrupted` with the attempt charged, a retry must be refused, the first
+receipt must still read `accepted`, and the provider must have seen exactly two
+effects.
+
+The MCP gateway's insecure fixture mode only dials `127.0.0.1`, so a loopback
+forwarder carries the broker's traffic to `provider`, and iptables owner rules
+let only the broker's uid use it. Those rules are a deployment pattern under
+test, not something opaque installs or enforces. Approval is the insecure test
+backend; native human approval and production MCP custody are not exercised.
+
+CI runs this with KVM (`.github/workflows/nix-machine-tests.yml`) and fails if
+`/dev/kvm` is missing. On Apple Silicon without a Linux builder, a privileged
+`nixos/nix` Docker container can build `checks.aarch64-linux.power-cut` after
+adding `sandbox = false` and `system-features = nixos-test kvm big-parallel`
+to its `/etc/nix/nix.conf`. QEMU then falls back to software emulation and the
+test script takes about five minutes after the build.
+
 ## Actual model and browser acceptance
 
 The model profile adds a pinned CPU llama.cpp build and a checksum-verified

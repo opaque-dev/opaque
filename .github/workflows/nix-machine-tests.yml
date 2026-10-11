@@ -1,0 +1,41 @@
+name: NixOS machine tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Two NixOS VMs (broker workstation + synthetic MCP provider): the broker
+  # loses power mid-effect and must recover the invocation as `unknown`
+  # without replay. See nix/tests/power-cut.nix for what is and is not opaque
+  # behaviour in that topology.
+  power-cut:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31.11.1
+        with:
+          # The action's own udev rule opens /dev/kvm to the build users.
+          enable_kvm: true
+
+      - name: Require hardware virtualisation
+        # Without KVM the VMs fall back to software emulation, which shifts
+        # every timing in the test. Fail instead of running that other test.
+        run: |
+          ls -l /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          nix config show system-features | tee /dev/stderr | grep -qw kvm
+
+      - name: Power cut mid-effect
+        run: nix build -L .#checks.x86_64-linux.power-cut

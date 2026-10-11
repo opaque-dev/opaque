@@ -22,3 +22,7 @@ __pycache__/
 
 # MkDocs
 site/
+
+# nix build output links
+result
+result-*

@@ -9,7 +9,28 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ## [Unreleased]
 
+### Added
+
+- A Nix flake that packages `opaque`, `opaqued` and `opaque-mcp` for Linux,
+  a NixOS module that runs `opaqued` under the enforced trust-domain split
+  (mirroring `deploy/systemd`), and a two-VM NixOS test in CI. The broker
+  loses power while an MCP effect is in flight, and after the reboot the
+  invocation must read `unknown` with its attempt charged and must not be
+  replayed. The test uses the insecure approval backend and a loopback MCP
+  fixture; see `tests/README.md` for what it does not cover.
+
 ### Fixed
+
+- A power cut shortly after the broker first started could leave it unable
+  to start again. Key files created on first use (the audit-chain HMAC key,
+  seal key, pairing-store key, attestation key and `opaque bundle keygen`
+  output) were written in place without fsync. After a power cut the file
+  could survive empty, and every later start refused it as corrupt, by
+  design. The new power-cut test hit this on its first KVM run with
+  `audit.hmac`. Keys are now written to a temporary file, fsynced, linked
+  into place and the directory fsynced. The final path either holds all 32
+  bytes or is absent and is created on the next start, and an existing key
+  is still never replaced.
 
 - A scoped `github.workflow.dispatch` that GitHub accepted is recorded as
   `api_accepted` again. The broker pins REST API version `2026-03-10`, under
