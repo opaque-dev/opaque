@@ -41,7 +41,10 @@ before answering:
 nix build -L .#checks.x86_64-linux.power-cut
 ```
 
-The test checks the client-group socket surface and custody file modes, then
+Background writeback is disabled on `workstation`
+(`vm.dirty_writeback_centisecs = 0`), so after the power cut only data that
+something fsynced survives, however long the VM ran first. The test checks
+the client-group socket surface and custody file modes, then
 runs one completed MCP call as a positive control. A second call is held at the
 provider after its effect is recorded, and the workstation loses power
 (`crash()`: no shutdown, so unwritten guest page cache is lost, unlike

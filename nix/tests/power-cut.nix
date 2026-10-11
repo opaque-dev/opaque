@@ -48,6 +48,13 @@ in
   nodes.workstation = {
     imports = [ module ];
 
+    # No background writeback: after crash() only data that something fsynced
+    # survives, independent of how long the VM ran before the power cut.
+    boot.kernel.sysctl = {
+      "vm.dirty_writeback_centisecs" = 0;
+      "vm.dirty_expire_centisecs" = 360000;
+    };
+
     services.opaqued = {
       enable = true;
       package = opaque;
