@@ -105,6 +105,9 @@ in
           chown opaque:opaque "$file"
           chmod 0600 "$file"
         done
+        # The power cut can land seconds after first boot. Without this, the
+        # config survives as an empty file, which opaqued loads as defaults.
+        sync
       '';
     };
 
@@ -150,9 +153,10 @@ in
         return int(provider.succeed("wc -l < /var/lib/mock-mcp/effects").strip())
 
     def broker_up():
-        workstation.wait_for_unit("opaqued.service")
-        workstation.wait_until_succeeds("test -S /run/opaque/opaqued.sock")
-        workstation.wait_until_succeeds("test -s /run/opaque/daemon.token")
+        # Software emulation needs ~2 minutes to boot; KVM needs ~20 seconds.
+        workstation.wait_for_unit("opaqued.service", timeout=300)
+        workstation.wait_until_succeeds("test -S /run/opaque/opaqued.sock", timeout=300)
+        workstation.wait_until_succeeds("test -s /run/opaque/daemon.token", timeout=60)
 
     start_all()
     provider.wait_for_unit("mock-mcp.service")
