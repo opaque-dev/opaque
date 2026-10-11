@@ -21,6 +21,17 @@ notes; `scripts/release-prep.sh` stamps the section below at release time.
 
 ### Fixed
 
+- A power cut shortly after the broker first started could leave it unable
+  to start again. Key files created on first use (the audit-chain HMAC key,
+  seal key, pairing-store key, attestation key and `opaque bundle keygen`
+  output) were written in place without fsync. After a power cut the file
+  could survive empty, and every later start refused it as corrupt, by
+  design. The new power-cut test hit this on its first KVM run with
+  `audit.hmac`. Keys are now written to a temporary file, fsynced, linked
+  into place and the directory fsynced. The final path either holds all 32
+  bytes or is absent and is created on the next start, and an existing key
+  is still never replaced.
+
 - A scoped `github.workflow.dispatch` that GitHub accepted is recorded as
   `api_accepted` again. The broker pins REST API version `2026-03-10`, under
   which GitHub answers a dispatch with `200` and the new run's id instead of
