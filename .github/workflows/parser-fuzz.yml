@@ -16,7 +16,7 @@ jobs:
         with:
           toolchain: nightly-2026-09-13
           components: rust-src
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2

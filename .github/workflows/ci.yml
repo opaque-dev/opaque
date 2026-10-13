@@ -112,7 +112,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Verify strict runner regressions
@@ -187,7 +187,7 @@ jobs:
         with:
           workspaces: ". -> ${{ runner.temp }}/critical-coverage-target"
           key: critical-coverage-${{ matrix.platform }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Verify collector and measured-coverage regressions
@@ -322,7 +322,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -408,7 +408,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Verify owned model harness regressions
@@ -451,7 +451,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Verify installed-artifact guard regressions
@@ -500,7 +500,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
